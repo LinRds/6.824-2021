@@ -20,6 +20,7 @@ package raft
 import (
 	"log"
 	"math/rand"
+
 	//	"bytes"
 	"sync"
 	"sync/atomic"
@@ -30,14 +31,8 @@ import (
 )
 
 const (
-	ElectionTimeout  = 2000
-	HeartbeatTimeout = 50
-)
-
-const (
-	follower = iota
-	candidate
-	leader
+	ElectionTimeout  = 150
+	HeartbeatTimeout = 100
 )
 
 // ApplyMsg as each Raft peer becomes aware that successive log entries are
@@ -70,31 +65,6 @@ type vote struct {
 type term struct {
 	mu    sync.RWMutex
 	value int
-}
-
-// if identity changed, term must changed exclude candidate timeout
-func (t *term) inc(id *identity) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.value++
-	id.mu.Lock()
-	defer id.mu.Unlock()
-	id.value = candidate
-}
-
-func (t *term) set(val int, id *identity) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	t.value = val
-	id.mu.Lock()
-	defer id.mu.Unlock()
-	id.value = follower
-}
-
-func (t *term) get() int {
-	t.mu.RLock()
-	defer t.mu.RUnlock()
-	return t.value
 }
 
 type identity struct {
@@ -141,25 +111,12 @@ func (id *identity) elegant(term int) bool {
 	return true
 }
 
-func (id *identity) next() {
-	id.mu.Lock()
-	defer id.mu.Unlock()
-	switch id.value {
-	case follower:
-		id.value = candidate
-	case candidate:
-		id.value = leader
-	case leader:
-		id.value = follower
-	}
-}
-
-func (id *identity) get() int {
+func (id *identity) get() (int, int) {
 	id.term.mu.RLock()
 	defer id.term.mu.RUnlock()
 	id.mu.RLock()
 	defer id.mu.RUnlock()
-	return id.value
+	return id.term.value, id.value
 }
 
 // Raft A Go object implementing a single Raft peer.
@@ -180,14 +137,27 @@ type Raft struct {
 	voteHandler             map[atomic.Uint64]func(args *RequestVoteArgs, reply *RequestVoteReply)
 }
 
+func (rf *Raft) setVote(vote *vote) {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.vote = vote
+}
+
+func (rf *Raft) getVote() *vote {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	return rf.vote
+}
+
 // GetState return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
-	term = rf.identity.term.get()
-	isleader = rf.identity.get() == leader
+	var id int
+	term, id = rf.identity.get()
+	isleader = id == leader
 	return term, isleader
 }
 
@@ -253,31 +223,37 @@ type RequestVoteArgs struct {
 	LastLogTerm  int
 }
 
+func pack(a, b uint32) uint64 {
+	return uint64(a)<<32 | uint64(b)
+}
+
+func unPack(num uint64) (uint32, uint32) {
+	return uint32(num >> 32), uint32(num & (1<<32 - 1))
+}
+
 // RequestVoteReply example RequestVote RPC reply structure.
 // field names must start with capital letters!
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term        int64
-	VoteGranted int64
+	TermAndGranted int64
 }
 
 func (r *RequestVoteReply) Set(term int64, granted bool) {
-	atomic.StoreInt64(&r.Term, term)
-	var g int64
+	var g uint32
 	if granted {
 		g = 1
 	}
-	atomic.StoreInt64(&r.VoteGranted, g)
+	packed := pack(uint32(term), g)
+	atomic.StoreInt64(&r.TermAndGranted, int64(packed))
 }
 
 func (r *RequestVoteReply) Get() (int64, bool) {
-	term := atomic.LoadInt64(&r.Term)
-	g := atomic.LoadInt64(&r.VoteGranted)
+	term, g := unPack(uint64(atomic.LoadInt64(&r.TermAndGranted)))
 	var granted bool
 	if g == 1 {
 		granted = true
 	}
-	return term, granted
+	return int64(term), granted
 }
 
 // RequestVote example RequestVote RPC handler.
@@ -287,21 +263,22 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	var newTerm int
-	switch rf.identity.get() {
+	myTerm, id := rf.identity.get()
+	switch id {
 	case leader:
-		newTerm = rf.requestVoteReplyAsLeader(args, reply)
+		newTerm = rf.requestVoteReplyAsLeader(args, reply, int64(myTerm))
 	case follower:
-		newTerm = rf.requestVoteAsFollower(args, reply)
+		newTerm = rf.requestVoteAsFollower(args, reply, int64(myTerm))
 	case candidate:
-		newTerm = rf.requestVoteAsCandidate(args, reply)
+		newTerm = rf.requestVoteAsCandidate(args, reply, int64(myTerm))
 	}
 	if newTerm != 0 {
+		rf.setVote(&vote{term: newTerm, votedFor: args.CandidateId, voted: true})
 		rf.identity.set(newTerm)
 	}
 }
 
-func (rf *Raft) requestVoteReplyAsLeader(args *RequestVoteArgs, reply *RequestVoteReply) int {
-	myTerm := int64(rf.identity.term.get())
+func (rf *Raft) requestVoteReplyAsLeader(args *RequestVoteArgs, reply *RequestVoteReply, myTerm int64) int {
 	var (
 		granted bool
 		newTerm int
@@ -314,15 +291,14 @@ func (rf *Raft) requestVoteReplyAsLeader(args *RequestVoteArgs, reply *RequestVo
 	return newTerm
 }
 
-func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteReply) int {
-	myTerm := rf.identity.term.get()
+func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteReply, myTerm int64) int {
 	var (
 		granted bool
 		newTerm int
 	)
 	// voteGranted is false
 	// although vote also has problem of data race, lock of currentTerm is enough
-	if myTerm >= args.Term || (rf.vote.term == args.Term && rf.vote.voted) {
+	if int(myTerm) >= args.Term || (rf.vote.term == args.Term && rf.vote.voted) {
 		newTerm = 0
 	} else {
 		rf.vote.voted = true
@@ -331,12 +307,11 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 		granted = true
 		newTerm = args.Term
 	}
-	reply.Set(int64(myTerm), granted)
+	reply.Set(myTerm, granted)
 	return newTerm
 }
 
-func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVoteReply) int {
-	myTerm := int64(rf.identity.term.get())
+func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVoteReply, myTerm int64) int {
 	var (
 		granted bool
 		newTerm int
@@ -376,22 +351,72 @@ func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVote
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, result chan int) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if !ok {
 		log.Println("rpc error")
+	} else {
+		result <- server
 	}
 	return ok
 }
 
+type LogEntry struct {
+}
 type AppendEntriesArgs struct {
+	Term         int
+	LeaderId     int
+	PrevLogIndex int
+	PrevLogTerm  int
+
+	Entries      []*LogEntry
+	LeaderCommit int
 }
 
 type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	if args == nil {
+		return
+	}
+	term, id := rf.identity.get()
+	if term < args.Term {
+		rf.identity.set(term)
+	}
+	switch id {
+	case leader:
+		rf.appendEntriesAsLeader(args, reply, term)
+	case follower:
+		rf.appendEntriesAsFollower(args, reply, term)
+	case candidate:
+		rf.appendEntriesAsCandidate(args, reply, term)
+	}
+}
+
+func (rf *Raft) appendEntriesAsLeader(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
+	if term <= args.Term {
+		rf.lastHeartbeatFromLeader.Store(time.Now().Unix())
+	}
+}
+
+func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
+	if term <= args.Term {
+		log.Printf("node %d update electionTimeOut", rf.me)
+		rf.lastHeartbeatFromLeader.Store(time.Now().Unix())
+	}
+}
+
+func (rf *Raft) appendEntriesAsCandidate(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
+	if term <= args.Term {
+		rf.lastHeartbeatFromLeader.Store(time.Now().Unix())
+	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
+	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply)
 	return ok
 }
 
@@ -440,19 +465,36 @@ func (rf *Raft) killed() bool {
 // heartsbeats recently.
 func (rf *Raft) ticker() {
 	sleep := func(duration, randLimit int) {
-		randN := rand.Intn(randLimit)
-		time.Sleep(time.Duration(ElectionTimeout+randN) * time.Millisecond)
+		var randN int
+		if randLimit > 0 {
+			randN = rand.Intn(randLimit)
+		}
+		time.Sleep(time.Duration(duration+randN) * time.Millisecond)
 	}
 	for rf.killed() == false {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
-		switch rf.identity.get() {
+		term, id := rf.identity.get()
+		switch id {
 		case leader:
-			sleep(HeartbeatTimeout, 200)
+			for i := range rf.peers {
+				if i == rf.me {
+					continue
+				}
+				rf.sendAppendEntries(i, &AppendEntriesArgs{
+					Term:         term,
+					LeaderId:     rf.me,
+					PrevLogIndex: 0,
+					PrevLogTerm:  0,
+					Entries:      nil,
+					LeaderCommit: 0,
+				}, &AppendEntriesReply{})
+			}
+			sleep(HeartbeatTimeout, 0)
 		case follower:
 			oldHeart := rf.lastHeartbeatFromLeader.Load()
-			sleep(ElectionTimeout, 500)
+			sleep(ElectionTimeout, 2000)
 			if oldHeart != rf.lastHeartbeatFromLeader.Load() {
 				continue
 			}
@@ -503,54 +545,49 @@ func (rf *Raft) electionOnce(term int) <-chan *electionResult {
 	*/
 	log.Println(rf.me, "start election")
 	res := make(chan *electionResult)
+	ready := make(chan int, len(rf.peers))
 	go func() {
-		rf.vote = &vote{
+		rf.setVote(&vote{
 			term:     term,
-			votedFor: rf.me,
 			voted:    true,
-		}
+			votedFor: rf.me,
+		})
 		args := &RequestVoteArgs{
 			Term:        term,
 			CandidateId: rf.me,
 		}
 		rps := make([]RequestVoteReply, len(rf.peers))
 		for i := range rps {
-			if i == rf.me {
-				rps[rf.me].Set(int64(term), true)
-			} else {
+			if i != rf.me {
 				rps[i] = RequestVoteReply{}
 			}
 		}
-		success := 0
+		success := 1
 		failed := 0
 		majority := len(rf.peers)/2 + 1
 		for i := range rf.peers {
 			if i == rf.me {
 				continue
 			}
-			go rf.sendRequestVote(i, args, &rps[i])
+			go rf.sendRequestVote(i, args, &rps[i], ready)
 		}
 		checked := make([]bool, len(rf.peers))
 		maxTerm := term
-		for {
-			for i := range rps {
-				rt, rg := rps[i].Get()
-				if rt == 0 || checked[i] {
-					continue
-				}
-				checked[i] = true
-				if rt > int64(maxTerm) {
-					maxTerm = int(rt)
-				}
-				if rg {
-					success++
-				} else {
-					failed++
-				}
+		for i := range ready {
+			// impossible theoretically
+			if checked[i] {
+				continue
 			}
-			// this sleep is very important
-			// other go routine will have no chance to run without it (maybe)
-			time.Sleep(5 * time.Millisecond)
+			checked[i] = true
+			rt, rg := rps[i].Get()
+			if rt > int64(maxTerm) {
+				maxTerm = int(rt)
+			}
+			if rg {
+				success++
+			} else {
+				failed++
+			}
 			if success >= majority || failed >= majority {
 				break
 			}

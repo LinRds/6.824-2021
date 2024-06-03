@@ -9,7 +9,6 @@ package raft
 //
 
 import (
-	"net/http"
 	"testing"
 )
 import "fmt"
@@ -24,9 +23,6 @@ import _ "net/http/pprof"
 const RaftElectionTimeout = 1000 * time.Millisecond
 
 func TestInitialElection2A(t *testing.T) {
-	go func() {
-		http.ListenAndServe("localhost:6060", nil)
-	}()
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()
@@ -42,8 +38,6 @@ func TestInitialElection2A(t *testing.T) {
 	term1 := cfg.checkTerms()
 	if term1 < 1 {
 		t.Fatalf("term is %v, but should be at least 1", term1)
-	} else {
-		t.Logf("term is %v", term1)
 	}
 
 	// does the leader+term stay the same if there is no network failure?
