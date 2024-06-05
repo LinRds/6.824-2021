@@ -32,7 +32,7 @@ import (
 
 const (
 	ElectionTimeout  = 150
-	HeartbeatTimeout = 100
+	HeartbeatTimeout = 50
 )
 
 // ApplyMsg as each Raft peer becomes aware that successive log entries are
@@ -137,10 +137,15 @@ type Raft struct {
 	voteHandler             map[atomic.Uint64]func(args *RequestVoteArgs, reply *RequestVoteReply)
 }
 
-func (rf *Raft) setVote(vote *vote) {
+func (rf *Raft) setVote(vote *vote) bool {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
+	// old term cannot overwrite new term
+	if vote.term <= rf.vote.term {
+		return false
+	}
 	rf.vote = vote
+	return true
 }
 
 func (rf *Raft) getVote() *vote {
@@ -273,11 +278,11 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		newTerm = rf.requestVoteAsCandidate(args, reply, int64(myTerm))
 	}
 	if newTerm != 0 {
-		rf.setVote(&vote{term: newTerm, votedFor: args.CandidateId, voted: true})
-		rf.identity.set(newTerm)
+		//rf.identity.set(newTerm)
 	}
 }
 
+// term of vote only can less or equal (not bigger) than term of raft
 func (rf *Raft) requestVoteReplyAsLeader(args *RequestVoteArgs, reply *RequestVoteReply, myTerm int64) int {
 	var (
 		granted bool
@@ -286,8 +291,15 @@ func (rf *Raft) requestVoteReplyAsLeader(args *RequestVoteArgs, reply *RequestVo
 	if myTerm < int64(args.Term) {
 		granted = true
 		newTerm = args.Term
+		set := rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId})
+		if !set {
+			return 0
+		}
 	}
 	reply.Set(myTerm, granted)
+	if newTerm != 0 {
+		rf.identity.set(newTerm)
+	}
 	return newTerm
 }
 
@@ -298,6 +310,8 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 	)
 	// voteGranted is false
 	// although vote also has problem of data race, lock of currentTerm is enough
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if int(myTerm) >= args.Term || (rf.vote.term == args.Term && rf.vote.voted) {
 		newTerm = 0
 	} else {
@@ -308,6 +322,9 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 		newTerm = args.Term
 	}
 	reply.Set(myTerm, granted)
+	if newTerm != 0 {
+		rf.identity.set(newTerm)
+	}
 	return newTerm
 }
 
@@ -319,8 +336,15 @@ func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVote
 	if myTerm < int64(args.Term) {
 		granted = true
 		newTerm = args.Term
+		set := rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId})
+		if !set {
+			return 0
+		}
 	}
 	reply.Set(myTerm, granted)
+	if newTerm != 0 {
+		rf.identity.set(newTerm)
+	}
 	return newTerm
 }
 
@@ -384,7 +408,9 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 	}
 	term, id := rf.identity.get()
 	if term < args.Term {
-		rf.identity.set(term)
+		if !rf.identity.set(term) {
+			return
+		}
 	}
 	switch id {
 	case leader:
@@ -398,20 +424,20 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 
 func (rf *Raft) appendEntriesAsLeader(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
 	if term <= args.Term {
-		rf.lastHeartbeatFromLeader.Store(time.Now().Unix())
+		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
 	}
 }
 
 func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
 	if term <= args.Term {
-		log.Printf("node %d update electionTimeOut", rf.me)
-		rf.lastHeartbeatFromLeader.Store(time.Now().Unix())
+		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
+		//log.Printf("node %d update electionTimeOut", rf.me)
 	}
 }
 
 func (rf *Raft) appendEntriesAsCandidate(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
 	if term <= args.Term {
-		rf.lastHeartbeatFromLeader.Store(time.Now().Unix())
+		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
 	}
 }
 
@@ -464,12 +490,13 @@ func (rf *Raft) killed() bool {
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
-	sleep := func(duration, randLimit int) {
+	sleep := func(duration, randLimit int) int {
 		var randN int
 		if randLimit > 0 {
 			randN = rand.Intn(randLimit)
 		}
 		time.Sleep(time.Duration(duration+randN) * time.Millisecond)
+		return duration + randN
 	}
 	for rf.killed() == false {
 		// Your code here to check if a leader election should
@@ -482,6 +509,7 @@ func (rf *Raft) ticker() {
 				if i == rf.me {
 					continue
 				}
+				//log.Printf("send heart beat to %d\n", i)
 				rf.sendAppendEntries(i, &AppendEntriesArgs{
 					Term:         term,
 					LeaderId:     rf.me,
@@ -494,38 +522,16 @@ func (rf *Raft) ticker() {
 			sleep(HeartbeatTimeout, 0)
 		case follower:
 			oldHeart := rf.lastHeartbeatFromLeader.Load()
-			sleep(ElectionTimeout, 2000)
+			timeout := sleep(ElectionTimeout, 150)
 			if oldHeart != rf.lastHeartbeatFromLeader.Load() {
 				continue
+			} else {
+				log.Printf("----------> %d check election timeout\n", rf.me)
 			}
-		ElectionLoop:
-			for {
-				time.Sleep(50 * time.Millisecond)
-				term, ok := rf.identity.inc()
-				if !ok {
-					log.Println("failed to inc term")
-					break ElectionLoop
-				}
-				select {
-				case <-time.After(ElectionTimeout * time.Millisecond):
-					log.Println(rf.me, "election timeout")
-				case res := <-rf.electionOnce(term):
-					if res.success {
-						chd := rf.identity.elegant(res.maxTerm)
-						if !chd {
-							log.Println(rf.me, "win the election, but term has changed")
-						} else {
-							log.Printf("node %d is leader now", rf.me)
-						}
-					} else {
-						log.Printf("%d election faild, newTerm is %d", rf.me, res.maxTerm)
-						rf.identity.set(res.maxTerm)
-					}
-					break ElectionLoop
-				}
-			}
+			rf.electionWithTimeout(time.Duration(timeout) * time.Millisecond)
 		case candidate:
-			log.Printf("invalid identity in ticker")
+			rf.electionWithTimeout(ElectionTimeout * time.Millisecond)
+			//log.Printf("invalid identity in ticker")
 		}
 	}
 }
@@ -533,6 +539,34 @@ func (rf *Raft) ticker() {
 type electionResult struct {
 	success bool
 	maxTerm int
+}
+
+func (rf *Raft) electionWithTimeout(timeout time.Duration) {
+	term, ok := rf.identity.inc()
+	if !ok {
+		log.Println("failed to inc term")
+		return
+	}
+	select {
+	case <-time.After(timeout):
+		log.Println(rf.me, "election timeout")
+	case res := <-rf.electionOnce(term):
+		if res.success {
+			chd := rf.identity.elegant(res.maxTerm)
+			if !chd {
+				log.Println(rf.me, "win the election, but term has changed")
+			} else {
+				log.Printf("node %d is leader now", rf.me)
+			}
+		} else {
+			log.Printf("%d election faild, newTerm is %d", rf.me, res.maxTerm)
+			if res.maxTerm > 0 {
+				rf.identity.set(res.maxTerm)
+			}
+		}
+		return
+	}
+
 }
 
 func (rf *Raft) electionOnce(term int) <-chan *electionResult {
@@ -547,11 +581,17 @@ func (rf *Raft) electionOnce(term int) <-chan *electionResult {
 	res := make(chan *electionResult)
 	ready := make(chan int, len(rf.peers))
 	go func() {
-		rf.setVote(&vote{
+		if !rf.setVote(&vote{
 			term:     term,
 			voted:    true,
 			votedFor: rf.me,
-		})
+		}) {
+			res <- &electionResult{
+				success: false,
+				maxTerm: 0,
+			}
+			return
+		}
 		args := &RequestVoteArgs{
 			Term:        term,
 			CandidateId: rf.me,

@@ -9,6 +9,7 @@ package raft
 //
 
 import (
+	"log"
 	"testing"
 )
 import "fmt"
@@ -61,7 +62,7 @@ func TestReElection2A(t *testing.T) {
 	cfg.begin("Test (2A): election after network failure")
 
 	leader1 := cfg.checkOneLeader()
-
+	log.Println("leader1 is ", leader1)
 	// if the leader disconnects, a new one should be elected.
 	cfg.disconnect(leader1)
 	cfg.checkOneLeader()
