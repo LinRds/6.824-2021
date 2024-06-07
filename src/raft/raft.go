@@ -378,7 +378,7 @@ func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVote
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, result chan int) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if !ok {
-		log.Println("rpc error")
+		log.Printf("%d->%d:rpc error", rf.me, server)
 	} else {
 		result <- server
 	}
