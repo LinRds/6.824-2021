@@ -133,6 +133,7 @@ type Raft struct {
 	//currentTerm             *term
 	identity                *identity
 	lastHeartbeatFromLeader atomic.Int64
+	voteMu                  sync.RWMutex
 	vote                    *vote
 	voteHandler             map[atomic.Uint64]func(args *RequestVoteArgs, reply *RequestVoteReply)
 }
@@ -149,8 +150,8 @@ func (rf *Raft) setVote(vote *vote) bool {
 }
 
 func (rf *Raft) getVote() *vote {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.voteMu.Lock()
+	defer rf.voteMu.Unlock()
 	return rf.vote
 }
 
@@ -308,18 +309,19 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 	)
 	// voteGranted is false
 	// although vote also has problem of data race, lock of currentTerm is enough
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
+	rf.voteMu.RLock()
 	if int(myTerm) >= args.Term || (rf.vote.term == args.Term && rf.vote.voted) {
+		defer rf.voteMu.RUnlock()
 		newTerm = 0
 	} else {
-		// reset election timeout as the Fig.2 in paper
-		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-		rf.vote.voted = true
-		rf.vote.votedFor = args.CandidateId
-		rf.vote.term = args.Term
-		granted = true
-		newTerm = args.Term
+		rf.voteMu.RUnlock()
+		// setVote may fail after get the lock
+		if rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId}) {
+			// reset election timeout as the Fig.2 in paper
+			rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
+			granted = true
+			newTerm = args.Term
+		}
 	}
 	reply.Set(myTerm, granted)
 	if newTerm != 0 {
