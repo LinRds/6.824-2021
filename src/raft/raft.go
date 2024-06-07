@@ -31,8 +31,8 @@ import (
 )
 
 const (
-	ElectionTimeout  = 150
-	HeartbeatTimeout = 50
+	ElectionTimeout  = 250
+	HeartbeatTimeout = 150
 )
 
 // ApplyMsg as each Raft peer becomes aware that successive log entries are
@@ -86,10 +86,10 @@ func (id *identity) inc() (int, bool) {
 	return id.term.value, true
 }
 
-func (id *identity) set(val int) bool {
+func (id *identity) set(old, val int) bool {
 	id.term.mu.Lock()
 	defer id.term.mu.Unlock()
-	if id.term.value > val {
+	if id.term.value != old {
 		return false
 	}
 	id.term.value = val
@@ -289,17 +289,15 @@ func (rf *Raft) requestVoteReplyAsLeader(args *RequestVoteArgs, reply *RequestVo
 		newTerm int
 	)
 	if myTerm < int64(args.Term) {
-		granted = true
-		newTerm = args.Term
-		set := rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId})
-		if !set {
-			return 0
-		}
+		return rf.requestVoteAsFollower(args, reply, myTerm)
+		//granted = true
+		//newTerm = args.Term
+		//set := rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId})
+		//if !set {
+		//	return 0
+		//}
 	}
 	reply.Set(myTerm, granted)
-	if newTerm != 0 {
-		rf.identity.set(newTerm)
-	}
 	return newTerm
 }
 
@@ -323,7 +321,7 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 	}
 	reply.Set(myTerm, granted)
 	if newTerm != 0 {
-		rf.identity.set(newTerm)
+		rf.identity.set(int(myTerm), newTerm)
 	}
 	return newTerm
 }
@@ -334,17 +332,9 @@ func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVote
 		newTerm int
 	)
 	if myTerm < int64(args.Term) {
-		granted = true
-		newTerm = args.Term
-		set := rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId})
-		if !set {
-			return 0
-		}
+		return rf.requestVoteAsFollower(args, reply, myTerm)
 	}
 	reply.Set(myTerm, granted)
-	if newTerm != 0 {
-		rf.identity.set(newTerm)
-	}
 	return newTerm
 }
 
@@ -408,7 +398,7 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 	}
 	term, id := rf.identity.get()
 	if term < args.Term {
-		if !rf.identity.set(term) {
+		if !rf.identity.set(term, args.Term) {
 			return
 		}
 	}
@@ -431,7 +421,6 @@ func (rf *Raft) appendEntriesAsLeader(args *AppendEntriesArgs, reply *AppendEntr
 func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
 	if term <= args.Term {
 		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-		//log.Printf("node %d update electionTimeOut", rf.me)
 	}
 }
 
@@ -523,15 +512,12 @@ func (rf *Raft) ticker() {
 		case follower:
 			oldHeart := rf.lastHeartbeatFromLeader.Load()
 			timeout := sleep(ElectionTimeout, 150)
-			if oldHeart != rf.lastHeartbeatFromLeader.Load() {
-				continue
-			} else {
-				log.Printf("----------> %d check election timeout\n", rf.me)
+			if oldHeart == rf.lastHeartbeatFromLeader.Load() {
+				log.Printf("----------> %d check election timeout <------------\n", rf.me)
+				rf.electionWithTimeout(time.Duration(timeout) * time.Millisecond)
 			}
-			rf.electionWithTimeout(time.Duration(timeout) * time.Millisecond)
 		case candidate:
 			rf.electionWithTimeout(ElectionTimeout * time.Millisecond)
-			//log.Printf("invalid identity in ticker")
 		}
 	}
 }
@@ -561,7 +547,7 @@ func (rf *Raft) electionWithTimeout(timeout time.Duration) {
 		} else {
 			log.Printf("%d election faild, newTerm is %d", rf.me, res.maxTerm)
 			if res.maxTerm > 0 {
-				rf.identity.set(res.maxTerm)
+				rf.identity.set(term, res.maxTerm)
 			}
 		}
 		return
