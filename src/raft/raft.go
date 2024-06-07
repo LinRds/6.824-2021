@@ -313,6 +313,8 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 	if int(myTerm) >= args.Term || (rf.vote.term == args.Term && rf.vote.voted) {
 		newTerm = 0
 	} else {
+		// reset election timeout as the Fig.2 in paper
+		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
 		rf.vote.voted = true
 		rf.vote.votedFor = args.CandidateId
 		rf.vote.term = args.Term
