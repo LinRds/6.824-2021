@@ -119,6 +119,31 @@ func (id *identity) get() (int, int) {
 	return id.term.value, id.value
 }
 
+type volatileState struct {
+	mu          sync.RWMutex
+	commitIndex int   // index of highest log entry known to be committed(initialized to 0, increases monotonically)
+	lastApplied int   // index of highest log entry applied to state machine(initialized to 0, increases monotonically)
+	nextIndex   []int // only for leader. for each server, index of the next log entry to send to that server(initialized to leader last log index + 1)
+	matchIndex  []int // only for leader. for each server, index of highest log entry known to be replicated on server(initialized to 0, increases monotonically)
+}
+
+func (rl *volatileState) initial() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.commitIndex = 0
+	rl.lastApplied = 0
+}
+
+func (rl *volatileState) takeOffice(peers int) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	rl.nextIndex = make([]int, peers)
+	for i := range rl.nextIndex {
+		rl.nextIndex[i] = rl.lastApplied
+	}
+	rl.matchIndex = make([]int, peers)
+}
+
 // Raft A Go object implementing a single Raft peer.
 type Raft struct {
 	mu        sync.Mutex          // Lock to protect  access to this peer's state
@@ -130,12 +155,15 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	//currentTerm             *term
 	identity                *identity
 	lastHeartbeatFromLeader atomic.Int64
+	lastHeartbeat           atomic.Int64
 	voteMu                  sync.RWMutex
 	vote                    *vote
 	voteHandler             map[atomic.Uint64]func(args *RequestVoteArgs, reply *RequestVoteReply)
+	state                   *volatileState
+	logMu                   sync.RWMutex
+	logs                    []*LogEntry
 }
 
 func (rf *Raft) setVote(vote *vote) bool {
@@ -380,6 +408,9 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 type LogEntry struct {
+	term  int
+	index int
+	cmd   any
 }
 type AppendEntriesArgs struct {
 	Term         int
@@ -457,6 +488,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
+	// if not leader, return
+	term, isLeader = rf.GetState()
+	if !isLeader {
+		return 0, 0, false
+	}
 
 	return index, term, isLeader
 }
@@ -498,21 +534,23 @@ func (rf *Raft) ticker() {
 		term, id := rf.identity.get()
 		switch id {
 		case leader:
-			for i := range rf.peers {
-				if i == rf.me {
-					continue
+			if time.Since(time.UnixMilli(rf.lastHeartbeat.Load())).Milliseconds() > HeartbeatTimeout {
+				rf.lastHeartbeat.Store(time.Now().UnixMilli())
+				for i := range rf.peers {
+					if i == rf.me {
+						continue
+					}
+					//log.Printf("send heart beat to %d\n", i)
+					rf.sendAppendEntries(i, &AppendEntriesArgs{
+						Term:         term,
+						LeaderId:     rf.me,
+						PrevLogIndex: 0,
+						PrevLogTerm:  0,
+						Entries:      nil,
+						LeaderCommit: 0,
+					}, &AppendEntriesReply{})
 				}
-				//log.Printf("send heart beat to %d\n", i)
-				rf.sendAppendEntries(i, &AppendEntriesArgs{
-					Term:         term,
-					LeaderId:     rf.me,
-					PrevLogIndex: 0,
-					PrevLogTerm:  0,
-					Entries:      nil,
-					LeaderCommit: 0,
-				}, &AppendEntriesReply{})
 			}
-			sleep(HeartbeatTimeout, 0)
 		case follower:
 			oldHeart := rf.lastHeartbeatFromLeader.Load()
 			timeout := sleep(ElectionTimeout, 150)
@@ -523,6 +561,7 @@ func (rf *Raft) ticker() {
 		case candidate:
 			rf.electionWithTimeout(ElectionTimeout * time.Millisecond)
 		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -663,6 +702,8 @@ func Make(peers []*labrpc.ClientEnd, me int,
 		},
 	}
 	rf.vote = &vote{}
+	rf.state = new(volatileState)
+	rf.logs = make([]*LogEntry, 0, 10)
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
