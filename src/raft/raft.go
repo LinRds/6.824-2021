@@ -141,7 +141,7 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
-	idMu                    sync.RWMutex // identity, vote, state, term
+	hbStopCh                chan struct{}
 	identity                *identity
 	lastHeartbeatFromLeader atomic.Int64
 	lastHeartbeat           atomic.Int64
@@ -161,6 +161,7 @@ func (rf *Raft) become(term, role int) (int, bool) {
 		if role != follower {
 			return 0, false
 		}
+		close(rf.hbStopCh)
 		rf.state.stepDown()
 	case follower:
 		if role == leader {
@@ -193,6 +194,8 @@ func (rf *Raft) becomeCandidate() (int, bool) {
 func (rf *Raft) becomeLeader(term int) bool {
 	rf.state.comeOnStage(len(rf.peers))
 	// TODO heartbeat
+	rf.hbStopCh = make(chan struct{})
+	go rf.heartbeat(rf.hbStopCh)
 	return rf.identity.elegant(term)
 }
 
@@ -317,23 +320,35 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) heartbeat(server int) {
+func (rf *Raft) heartbeat(stopCh chan struct{}) {
+	rf.identity.mu.RLock()
+	term, id := rf.identity.get()
+	rf.identity.mu.RUnlock()
+	if id != leader {
+		return
+	}
 	for {
-		term, id := rf.identity.get()
-		if id != leader {
+		select {
+		case <-stopCh:
 			return
-		}
-		since := time.Since(time.UnixMilli(rf.lastHeartbeat.Load()))
-		if since >= HeartbeatTimeout {
-			rf.sendAppendEntries(server, &AppendEntriesArgs{
-				Term:         term,
-				LeaderId:     rf.me,
-				PrevLogIndex: 0,
-				PrevLogTerm:  0,
-				Entries:      nil,
-				LeaderCommit: 0,
-			}, &AppendEntriesReply{})
-			rf.lastHeartbeat.Store(time.Now().UnixMilli())
+		default:
+			since := time.Since(time.UnixMilli(rf.lastHeartbeat.Load()))
+			if since >= HeartbeatTimeout {
+				for i := 0; i < len(rf.peers); i++ {
+					if i == rf.me {
+						continue
+					}
+					rf.sendAppendEntries(i, &AppendEntriesArgs{
+						Term:         term,
+						LeaderId:     rf.me,
+						PrevLogIndex: 0,
+						PrevLogTerm:  0,
+						Entries:      nil,
+						LeaderCommit: 0,
+					}, &AppendEntriesReply{})
+				}
+				rf.lastHeartbeat.Store(time.Now().UnixMilli())
+			}
 		}
 	}
 }

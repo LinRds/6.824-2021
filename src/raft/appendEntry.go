@@ -52,7 +52,7 @@ func (rf *Raft) appendEntriesAsLeader(args *AppendEntriesArgs, reply *AppendEntr
 
 func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
 	if term <= args.Term {
-		//rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
+		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
 		rf.state.stepDown()
 		_, set := rf.become(args.Term, follower)
 		if !set {
