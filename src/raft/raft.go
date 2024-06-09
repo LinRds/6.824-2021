@@ -63,85 +63,86 @@ type vote struct {
 }
 
 type term struct {
-	mu    sync.RWMutex
 	value int
 }
 
 type identity struct {
 	mu    sync.RWMutex
 	value int
-	term  *term
+	term  int
+	vote  *vote
 }
 
 func (id *identity) inc() (int, bool) {
-	id.term.mu.Lock()
-	defer id.term.mu.Unlock()
-	id.term.value++
 	id.mu.Lock()
 	defer id.mu.Unlock()
 	if id.value == leader {
 		return 0, false
 	}
+	id.term++
 	id.value = candidate
-	return id.term.value, true
+	return id.term, true
 }
 
 func (id *identity) set(old, val int) bool {
-	id.term.mu.Lock()
-	defer id.term.mu.Unlock()
-	if id.term.value != old {
-		return false
-	}
-	id.term.value = val
 	id.mu.Lock()
 	defer id.mu.Unlock()
+	if id.value != old {
+		return false
+	}
+	id.term = val
 	id.value = follower
 	return true
 }
 
 func (id *identity) elegant(term int) bool {
-	id.term.mu.RLock()
-	defer id.term.mu.RUnlock()
-	id.mu.Lock()
-	defer id.mu.Unlock()
-	if term != id.term.value || id.value != candidate {
+	id.mu.RLock()
+	if term != id.term || id.value != candidate {
+		id.mu.RUnlock()
 		return false
 	}
+	id.mu.RUnlock()
+	id.mu.Lock()
+	defer id.mu.Unlock()
 	id.value = leader
 	return true
 }
 
 func (id *identity) get() (int, int) {
-	id.term.mu.RLock()
-	defer id.term.mu.RUnlock()
 	id.mu.RLock()
 	defer id.mu.RUnlock()
-	return id.term.value, id.value
+	return id.term, id.value
 }
 
 type volatileState struct {
 	mu          sync.RWMutex
-	commitIndex int   // index of highest log entry known to be committed(initialized to 0, increases monotonically)
-	lastApplied int   // index of highest log entry applied to state machine(initialized to 0, increases monotonically)
-	nextIndex   []int // only for leader. for each server, index of the next log entry to send to that server(initialized to leader last log index + 1)
-	matchIndex  []int // only for leader. for each server, index of highest log entry known to be replicated on server(initialized to 0, increases monotonically)
+	commitIndex int // index of highest log entry known to be committed(initialized to 0, increases monotonically)
+	lastApplied int // index of highest log entry applied to state machine(initialized to 0, increases monotonically)
+	//lastApplied atomic.Int64
+	nextIndex  []int // only for leader. for each server, index of the next log entry to send to that server(initialized to leader last log index + 1)
+	matchIndex []int // only for leader. for each server, index of highest log entry known to be replicated on server(initialized to 0, increases monotonically)
+	applyChan  []chan *LogEntry
 }
 
-func (rl *volatileState) initial() {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
-	rl.commitIndex = 0
-	rl.lastApplied = 0
-}
-
-func (rl *volatileState) takeOffice(peers int) {
+func (rl *volatileState) comeOnStage(peers int) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
 	rl.nextIndex = make([]int, peers)
 	for i := range rl.nextIndex {
 		rl.nextIndex[i] = rl.lastApplied
 	}
+	rl.applyChan = make([]chan *LogEntry, peers)
 	rl.matchIndex = make([]int, peers)
+}
+
+func (rl *volatileState) stepDown() {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	for i := range rl.applyChan {
+		if rl.applyChan[i] != nil {
+			close(rl.applyChan[i])
+		}
+	}
 }
 
 // Raft A Go object implementing a single Raft peer.
@@ -155,32 +156,70 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	idMu                    sync.RWMutex // identity, vote, state, term
 	identity                *identity
 	lastHeartbeatFromLeader atomic.Int64
 	lastHeartbeat           atomic.Int64
-	voteMu                  sync.RWMutex
-	vote                    *vote
 	voteHandler             map[atomic.Uint64]func(args *RequestVoteArgs, reply *RequestVoteReply)
 	state                   *volatileState
 	logMu                   sync.RWMutex
 	logs                    []*LogEntry
 }
 
-func (rf *Raft) setVote(vote *vote) bool {
+func (rf *Raft) become(term, role int) (int, bool) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	// old term cannot overwrite new term
-	if vote.term <= rf.vote.term {
-		return false
+	oldTerm, id := rf.identity.get()
+	if oldTerm > term {
+		return 0, false
 	}
-	rf.vote = vote
-	return true
+	switch id {
+	case leader:
+		if role != follower {
+			return 0, false
+		}
+		rf.state.stepDown()
+	case follower:
+		if role == leader {
+			return 0, false
+		}
+	case candidate:
+	}
+
+	switch role {
+	case leader:
+		return term, rf.becomeLeader(term)
+	case follower:
+		return term, rf.becomeFollower(oldTerm, term)
+	case candidate:
+		return rf.becomeCandidate()
+	}
+	return 0, false
 }
 
-func (rf *Raft) getVote() *vote {
-	rf.voteMu.Lock()
-	defer rf.voteMu.Unlock()
-	return rf.vote
+// change of identity should be atomic
+func (rf *Raft) becomeFollower(oldTerm, term int) bool {
+	set := rf.identity.set(oldTerm, term)
+	return set
+}
+
+func (rf *Raft) becomeCandidate() (int, bool) {
+	return rf.identity.inc()
+}
+
+func (rf *Raft) becomeLeader(term int) bool {
+	rf.state.comeOnStage(len(rf.peers))
+	// TODO heartbeat
+	return rf.identity.elegant(term)
+}
+
+func (rf *Raft) setVote(vote *vote) bool {
+	// old term cannot overwrite new term
+	if vote.term <= rf.identity.vote.term {
+		return false
+	}
+	rf.identity.vote = vote
+	return true
 }
 
 // GetState return currentTerm and whether this server
@@ -247,229 +286,6 @@ func (rf *Raft) Snapshot(index int, snapshot []byte) {
 
 }
 
-// RequestVoteArgs example RequestVote RPC arguments structure.
-// field names must start with capital letters!
-type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
-	Term         int
-	CandidateId  int
-	LastLogIndex int
-	LastLogTerm  int
-}
-
-func pack(a, b uint32) uint64 {
-	return uint64(a)<<32 | uint64(b)
-}
-
-func unPack(num uint64) (uint32, uint32) {
-	return uint32(num >> 32), uint32(num & (1<<32 - 1))
-}
-
-// RequestVoteReply example RequestVote RPC reply structure.
-// field names must start with capital letters!
-type RequestVoteReply struct {
-	// Your data here (2A).
-	TermAndGranted int64
-}
-
-func (r *RequestVoteReply) Set(term int64, granted bool) {
-	var g uint32
-	if granted {
-		g = 1
-	}
-	packed := pack(uint32(term), g)
-	atomic.StoreInt64(&r.TermAndGranted, int64(packed))
-}
-
-func (r *RequestVoteReply) Get() (int64, bool) {
-	term, g := unPack(uint64(atomic.LoadInt64(&r.TermAndGranted)))
-	var granted bool
-	if g == 1 {
-		granted = true
-	}
-	return int64(term), granted
-}
-
-// RequestVote example RequestVote RPC handler.
-func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
-	// Your code here (2A, 2B).
-	if args == nil {
-		return
-	}
-	var newTerm int
-	myTerm, id := rf.identity.get()
-	switch id {
-	case leader:
-		newTerm = rf.requestVoteReplyAsLeader(args, reply, int64(myTerm))
-	case follower:
-		newTerm = rf.requestVoteAsFollower(args, reply, int64(myTerm))
-	case candidate:
-		newTerm = rf.requestVoteAsCandidate(args, reply, int64(myTerm))
-	}
-	if newTerm != 0 {
-		//rf.identity.set(newTerm)
-	}
-}
-
-// term of vote only can less or equal (not bigger) than term of raft
-func (rf *Raft) requestVoteReplyAsLeader(args *RequestVoteArgs, reply *RequestVoteReply, myTerm int64) int {
-	var (
-		granted bool
-		newTerm int
-	)
-	if myTerm < int64(args.Term) {
-		return rf.requestVoteAsFollower(args, reply, myTerm)
-		//granted = true
-		//newTerm = args.Term
-		//set := rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId})
-		//if !set {
-		//	return 0
-		//}
-	}
-	reply.Set(myTerm, granted)
-	return newTerm
-}
-
-func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteReply, myTerm int64) int {
-	var (
-		granted bool
-		newTerm int
-	)
-	// voteGranted is false
-	// although vote also has problem of data race, lock of currentTerm is enough
-	rf.voteMu.RLock()
-	if int(myTerm) >= args.Term || (rf.vote.term == args.Term && rf.vote.voted) {
-		defer rf.voteMu.RUnlock()
-		newTerm = 0
-	} else {
-		rf.voteMu.RUnlock()
-		// setVote may fail after get the lock
-		if rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId}) {
-			// reset election timeout as the Fig.2 in paper
-			rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-			granted = true
-			newTerm = args.Term
-		}
-	}
-	reply.Set(myTerm, granted)
-	if newTerm != 0 {
-		rf.identity.set(int(myTerm), newTerm)
-	}
-	return newTerm
-}
-
-func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVoteReply, myTerm int64) int {
-	var (
-		granted bool
-		newTerm int
-	)
-	if myTerm < int64(args.Term) {
-		return rf.requestVoteAsFollower(args, reply, myTerm)
-	}
-	reply.Set(myTerm, granted)
-	return newTerm
-}
-
-// example code to send a RequestVote RPC to a server.
-// server is the index of the target server in rf.peers[].
-// expects RPC arguments in args.
-// fills in *reply with RPC reply, so caller should
-// pass &reply.
-// the types of the args and reply passed to Call() must be
-// the same as the types of the arguments declared in the
-// handler function (including whether they are pointers).
-//
-// The labrpc package simulates a lossy network, in which servers
-// may be unreachable, and in which requests and replies may be lost.
-// Call() sends a request and waits for a reply. If a reply arrives
-// within a timeout interval, Call() returns true; otherwise
-// Call() returns false. Thus Call() may not return for a while.
-// A false return can be caused by a dead server, a live server that
-// can't be reached, a lost request, or a lost reply.
-//
-// Call() is guaranteed to return (perhaps after a delay) *except* if the
-// handler function on the server side does not return.  Thus there
-// is no need to implement your own timeouts around Call().
-//
-// look at the comments in ../labrpc/labrpc.go for more details.
-//
-// if you're having trouble getting RPC to work, check that you've
-// capitalized all field names in structs passed over RPC, and
-// that the caller passes the address of the reply struct with &, not
-// the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, result chan int) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
-	if !ok {
-		log.Printf("%d->%d:rpc error", rf.me, server)
-	} else {
-		result <- server
-	}
-	return ok
-}
-
-type LogEntry struct {
-	term  int
-	index int
-	cmd   any
-}
-type AppendEntriesArgs struct {
-	Term         int
-	LeaderId     int
-	PrevLogIndex int
-	PrevLogTerm  int
-
-	Entries      []*LogEntry
-	LeaderCommit int
-}
-
-type AppendEntriesReply struct {
-	Term    int
-	Success bool
-}
-
-func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	if args == nil {
-		return
-	}
-	term, id := rf.identity.get()
-	if term < args.Term {
-		if !rf.identity.set(term, args.Term) {
-			return
-		}
-	}
-	switch id {
-	case leader:
-		rf.appendEntriesAsLeader(args, reply, term)
-	case follower:
-		rf.appendEntriesAsFollower(args, reply, term)
-	case candidate:
-		rf.appendEntriesAsCandidate(args, reply, term)
-	}
-}
-
-func (rf *Raft) appendEntriesAsLeader(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	if term <= args.Term {
-		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-	}
-}
-
-func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	if term <= args.Term {
-		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-	}
-}
-
-func (rf *Raft) appendEntriesAsCandidate(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	if term <= args.Term {
-		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-	}
-}
-
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
-	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply)
-	return ok
-}
-
 // Start the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -491,7 +307,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// if not leader, return
 	term, isLeader = rf.GetState()
 	if !isLeader {
-		return 0, 0, false
+		return -1, -1, false
 	}
 
 	return index, term, isLeader
@@ -516,6 +332,27 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) heartbeat(server int) {
+	for {
+		term, id := rf.identity.get()
+		if id != leader {
+			return
+		}
+		since := time.Since(time.UnixMilli(rf.lastHeartbeat.Load()))
+		if since >= HeartbeatTimeout {
+			rf.sendAppendEntries(server, &AppendEntriesArgs{
+				Term:         term,
+				LeaderId:     rf.me,
+				PrevLogIndex: 0,
+				PrevLogTerm:  0,
+				Entries:      nil,
+				LeaderCommit: 0,
+			}, &AppendEntriesReply{})
+			rf.lastHeartbeat.Store(time.Now().UnixMilli())
+		}
+	}
+}
+
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
@@ -534,146 +371,27 @@ func (rf *Raft) ticker() {
 		term, id := rf.identity.get()
 		switch id {
 		case leader:
-			if time.Since(time.UnixMilli(rf.lastHeartbeat.Load())).Milliseconds() > HeartbeatTimeout {
-				rf.lastHeartbeat.Store(time.Now().UnixMilli())
-				for i := range rf.peers {
-					if i == rf.me {
-						continue
-					}
-					//log.Printf("send heart beat to %d\n", i)
-					rf.sendAppendEntries(i, &AppendEntriesArgs{
-						Term:         term,
-						LeaderId:     rf.me,
-						PrevLogIndex: 0,
-						PrevLogTerm:  0,
-						Entries:      nil,
-						LeaderCommit: 0,
-					}, &AppendEntriesReply{})
-				}
-			}
 		case follower:
 			oldHeart := rf.lastHeartbeatFromLeader.Load()
 			timeout := sleep(ElectionTimeout, 150)
 			if oldHeart == rf.lastHeartbeatFromLeader.Load() {
 				log.Printf("----------> %d check election timeout <------------\n", rf.me)
-				rf.electionWithTimeout(time.Duration(timeout) * time.Millisecond)
+				newTerm, ok := rf.become(term, candidate)
+				// impossible
+				if !ok {
+					log.Printf("%d fail to become candidate", rf.me)
+				}
+				rf.electionWithTimeout(newTerm, time.Duration(timeout)*time.Millisecond)
 			}
 		case candidate:
-			rf.electionWithTimeout(ElectionTimeout * time.Millisecond)
+			newTerm, ok := rf.become(term, candidate)
+			if !ok {
+				log.Printf("%d fail to become candidate", rf.me)
+			}
+			rf.electionWithTimeout(newTerm, ElectionTimeout*time.Millisecond)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-}
-
-type electionResult struct {
-	success bool
-	maxTerm int
-}
-
-func (rf *Raft) electionWithTimeout(timeout time.Duration) {
-	term, ok := rf.identity.inc()
-	if !ok {
-		log.Println("failed to inc term")
-		return
-	}
-	select {
-	case <-time.After(timeout):
-		log.Println(rf.me, "election timeout")
-	case res := <-rf.electionOnce(term):
-		if res.success {
-			chd := rf.identity.elegant(res.maxTerm)
-			if !chd {
-				log.Println(rf.me, "win the election, but term has changed")
-			} else {
-				log.Printf("node %d is leader now", rf.me)
-			}
-		} else {
-			log.Printf("%d election faild, newTerm is %d", rf.me, res.maxTerm)
-			if res.maxTerm > 0 {
-				rf.identity.set(term, res.maxTerm)
-			}
-		}
-		return
-	}
-
-}
-
-func (rf *Raft) electionOnce(term int) <-chan *electionResult {
-	/*
-		1. 发送voteRPC
-		2. 获得了多数投票则晋升为leader
-		3. 获得了多数否定则退回follower
-		4. 获得了任期大于自己的回复退回follower
-		5. 超时没有完成选举任期加1，进入下一轮
-	*/
-	log.Println(rf.me, "start election")
-	res := make(chan *electionResult)
-	ready := make(chan int, len(rf.peers))
-	go func() {
-		if !rf.setVote(&vote{
-			term:     term,
-			voted:    true,
-			votedFor: rf.me,
-		}) {
-			res <- &electionResult{
-				success: false,
-				maxTerm: 0,
-			}
-			return
-		}
-		args := &RequestVoteArgs{
-			Term:        term,
-			CandidateId: rf.me,
-		}
-		rps := make([]RequestVoteReply, len(rf.peers))
-		for i := range rps {
-			if i != rf.me {
-				rps[i] = RequestVoteReply{}
-			}
-		}
-		success := 1
-		failed := 0
-		majority := len(rf.peers)/2 + 1
-		for i := range rf.peers {
-			if i == rf.me {
-				continue
-			}
-			go rf.sendRequestVote(i, args, &rps[i], ready)
-		}
-		checked := make([]bool, len(rf.peers))
-		maxTerm := term
-		for i := range ready {
-			// impossible theoretically
-			if checked[i] {
-				continue
-			}
-			checked[i] = true
-			rt, rg := rps[i].Get()
-			if rt > int64(maxTerm) {
-				maxTerm = int(rt)
-			}
-			if rg {
-				success++
-			} else {
-				failed++
-			}
-			if success >= majority || failed >= majority {
-				break
-			}
-		}
-		if maxTerm > term || failed >= majority {
-			res <- &electionResult{
-				success: false,
-				maxTerm: maxTerm,
-			}
-		} else {
-			res <- &electionResult{
-				success: true,
-				maxTerm: maxTerm,
-			}
-		}
-	}()
-	return res
 }
 
 // Make the service or tester wants to create a Raft server. the ports
@@ -696,12 +414,9 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.identity = &identity{
 		mu:    sync.RWMutex{},
 		value: follower,
-		term: &term{
-			mu:    sync.RWMutex{},
-			value: 1,
-		},
+		term:  1,
+		vote:  new(vote),
 	}
-	rf.vote = &vote{}
 	rf.state = new(volatileState)
 	rf.logs = make([]*LogEntry, 0, 10)
 	// initialize from state persisted before a crash
