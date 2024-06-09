@@ -26,6 +26,8 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 	if args == nil {
 		return
 	}
+	rf.identity.mu.Lock()
+	defer rf.identity.mu.Unlock()
 	term, id := rf.identity.get()
 	switch id {
 	case leader:
@@ -38,40 +40,35 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 }
 
 func (rf *Raft) appendEntriesAsLeader(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	if term < args.Term {
-		if !rf.identity.set(term, args.Term) {
+	if term <= args.Term {
+		_, set := rf.become(args.Term, follower)
+		if !set {
 			return
 		}
 		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
 		rf.state.stepDown()
-	}
-	if term <= args.Term {
 	}
 }
 
 func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	if term < args.Term {
-		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
+	if term <= args.Term {
+		//rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
 		rf.state.stepDown()
-		if !rf.identity.set(term, args.Term) {
+		_, set := rf.become(args.Term, follower)
+		if !set {
 			return
 		}
-	}
-	if term <= args.Term {
-		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
 	}
 }
 
 func (rf *Raft) appendEntriesAsCandidate(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	if term < args.Term {
-		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-		rf.state.stepDown()
-		if !rf.identity.set(term, args.Term) {
-			return
-		}
-	}
 	if term <= args.Term {
 		rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
+		rf.state.stepDown()
+		_, set := rf.become(args.Term, follower)
+		if !set {
+			return
+		}
 	}
 }
 

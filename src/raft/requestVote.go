@@ -204,17 +204,6 @@ func (rf *Raft) electionOnce(term int) <-chan *electionResult {
 	res := make(chan *electionResult)
 	ready := make(chan int, len(rf.peers))
 	go func() {
-		//if !rf.setVote(&vote{
-		//	term:     term,
-		//	voted:    true,
-		//	votedFor: rf.me,
-		//}) {
-		//	res <- &electionResult{
-		//		success: false,
-		//		maxTerm: 0,
-		//	}
-		//	return
-		//}
 		args := &RequestVoteArgs{
 			Term:        term,
 			CandidateId: rf.me,
