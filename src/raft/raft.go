@@ -74,8 +74,6 @@ type identity struct {
 }
 
 func (id *identity) inc() (int, bool) {
-	id.mu.Lock()
-	defer id.mu.Unlock()
 	if id.value == leader {
 		return 0, false
 	}
@@ -85,9 +83,7 @@ func (id *identity) inc() (int, bool) {
 }
 
 func (id *identity) set(old, val int) bool {
-	id.mu.Lock()
-	defer id.mu.Unlock()
-	if id.value != old {
+	if id.term != old {
 		return false
 	}
 	id.term = val
@@ -96,21 +92,14 @@ func (id *identity) set(old, val int) bool {
 }
 
 func (id *identity) elegant(term int) bool {
-	id.mu.RLock()
 	if term != id.term || id.value != candidate {
-		id.mu.RUnlock()
 		return false
 	}
-	id.mu.RUnlock()
-	id.mu.Lock()
-	defer id.mu.Unlock()
 	id.value = leader
 	return true
 }
 
 func (id *identity) get() (int, int) {
-	id.mu.RLock()
-	defer id.mu.RUnlock()
 	return id.term, id.value
 }
 
@@ -125,8 +114,6 @@ type volatileState struct {
 }
 
 func (rl *volatileState) comeOnStage(peers int) {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
 	rl.nextIndex = make([]int, peers)
 	for i := range rl.nextIndex {
 		rl.nextIndex[i] = rl.lastApplied
@@ -136,8 +123,6 @@ func (rl *volatileState) comeOnStage(peers int) {
 }
 
 func (rl *volatileState) stepDown() {
-	rl.mu.Lock()
-	defer rl.mu.Unlock()
 	for i := range rl.applyChan {
 		if rl.applyChan[i] != nil {
 			close(rl.applyChan[i])
@@ -167,8 +152,6 @@ type Raft struct {
 }
 
 func (rf *Raft) become(term, role int) (int, bool) {
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	oldTerm, id := rf.identity.get()
 	if oldTerm > term {
 		return 0, false
@@ -229,7 +212,9 @@ func (rf *Raft) GetState() (int, bool) {
 	var isleader bool
 	// Your code here (2A).
 	var id int
+	rf.identity.mu.RLock()
 	term, id = rf.identity.get()
+	rf.identity.mu.RUnlock()
 	isleader = id == leader
 	return term, isleader
 }
@@ -364,31 +349,38 @@ func (rf *Raft) ticker() {
 		time.Sleep(time.Duration(duration+randN) * time.Millisecond)
 		return duration + randN
 	}
+	election := func(term int) {
+		rf.identity.mu.Lock()
+		defer rf.identity.mu.Unlock()
+		newTerm, ok := rf.become(term, candidate)
+		// impossible
+		if !ok {
+			log.Printf("%d fail to become candidate", rf.me)
+		}
+		if !rf.setVote(&vote{term: newTerm, voted: true, votedFor: rf.me}) {
+			return
+		}
+		log.Printf("%d start election for term %d", rf.me, newTerm)
+		rf.electionWithTimeout(newTerm, ElectionTimeout*time.Millisecond)
+	}
 	for rf.killed() == false {
 		// Your code here to check if a leader election should
 		// be started and to randomize sleeping time using
 		// time.Sleep().
+		rf.identity.mu.RLock()
 		term, id := rf.identity.get()
+		rf.identity.mu.RUnlock()
 		switch id {
 		case leader:
 		case follower:
 			oldHeart := rf.lastHeartbeatFromLeader.Load()
-			timeout := sleep(ElectionTimeout, 150)
+			sleep(ElectionTimeout, 500)
 			if oldHeart == rf.lastHeartbeatFromLeader.Load() {
 				log.Printf("----------> %d check election timeout <------------\n", rf.me)
-				newTerm, ok := rf.become(term, candidate)
-				// impossible
-				if !ok {
-					log.Printf("%d fail to become candidate", rf.me)
-				}
-				rf.electionWithTimeout(newTerm, time.Duration(timeout)*time.Millisecond)
+				election(term)
 			}
 		case candidate:
-			newTerm, ok := rf.become(term, candidate)
-			if !ok {
-				log.Printf("%d fail to become candidate", rf.me)
-			}
-			rf.electionWithTimeout(newTerm, ElectionTimeout*time.Millisecond)
+			election(term)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}

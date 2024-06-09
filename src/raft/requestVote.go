@@ -56,6 +56,8 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	var newTerm int
+	rf.identity.mu.Lock()
+	defer rf.identity.mu.Unlock()
 	myTerm, id := rf.identity.get()
 	switch id {
 	case leader:
@@ -91,8 +93,6 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 	)
 	// voteGranted is false
 	// although vote also has problem of data race, lock of currentTerm is enough
-	rf.identity.mu.Lock()
-	defer rf.identity.mu.Unlock()
 	if int(myTerm) >= args.Term || (rf.identity.vote.term == args.Term && rf.identity.vote.voted) {
 		newTerm = 0
 	} else {
@@ -106,7 +106,8 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 	}
 	reply.Set(myTerm, granted)
 	if newTerm != 0 {
-		rf.identity.set(int(myTerm), newTerm)
+		rf.become(newTerm, follower)
+		//rf.identity.set(int(myTerm), newTerm)
 	}
 	return newTerm
 }
@@ -169,6 +170,7 @@ func (rf *Raft) electionWithTimeout(term int, timeout time.Duration) {
 	select {
 	case <-time.After(timeout):
 		log.Println(rf.me, "election timeout")
+		return
 	case res := <-rf.electionOnce(term):
 		if res.success {
 			_, chd := rf.become(res.maxTerm, leader)
@@ -189,7 +191,6 @@ func (rf *Raft) electionWithTimeout(term int, timeout time.Duration) {
 			}
 		}
 	}
-
 }
 
 func (rf *Raft) electionOnce(term int) <-chan *electionResult {
@@ -200,21 +201,20 @@ func (rf *Raft) electionOnce(term int) <-chan *electionResult {
 		4. 获得了任期大于自己的回复退回follower
 		5. 超时没有完成选举任期加1，进入下一轮
 	*/
-	log.Printf("%d start election for term %d", rf.me, term)
 	res := make(chan *electionResult)
 	ready := make(chan int, len(rf.peers))
 	go func() {
-		if !rf.setVote(&vote{
-			term:     term,
-			voted:    true,
-			votedFor: rf.me,
-		}) {
-			res <- &electionResult{
-				success: false,
-				maxTerm: 0,
-			}
-			return
-		}
+		//if !rf.setVote(&vote{
+		//	term:     term,
+		//	voted:    true,
+		//	votedFor: rf.me,
+		//}) {
+		//	res <- &electionResult{
+		//		success: false,
+		//		maxTerm: 0,
+		//	}
+		//	return
+		//}
 		args := &RequestVoteArgs{
 			Term:        term,
 			CandidateId: rf.me,
@@ -229,10 +229,9 @@ func (rf *Raft) electionOnce(term int) <-chan *electionResult {
 		failed := 0
 		majority := len(rf.peers)/2 + 1
 		for i := range rf.peers {
-			if i == rf.me {
-				continue
+			if i != rf.me {
+				go rf.sendRequestVote(i, args, &rps[i], ready)
 			}
-			go rf.sendRequestVote(i, args, &rps[i], ready)
 		}
 		checked := make([]bool, len(rf.peers))
 		maxTerm := term
