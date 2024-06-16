@@ -56,9 +56,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	var newTerm int
-	rf.identity.mu.Lock()
-	defer rf.identity.mu.Unlock()
-	myTerm, id := rf.identity.get()
+	rf.pState.mu.Lock()
+	defer rf.pState.mu.Unlock()
+	myTerm, id := rf.pState.get()
 	switch id {
 	case leader:
 		newTerm = rf.requestVoteReplyAsLeader(args, reply, int64(myTerm))
@@ -68,18 +68,17 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		newTerm = rf.requestVoteAsCandidate(args, reply, int64(myTerm))
 	}
 	if newTerm != 0 {
-		//rf.identity.set(newTerm)
+		//rf.PersistentState.set(newTerm)
 	}
 }
 
-// term of vote only can less or equal (not bigger) than term of raft
+// term of Vote only can less or equal (not bigger) than term of raft
 func (rf *Raft) requestVoteReplyAsLeader(args *RequestVoteArgs, reply *RequestVoteReply, myTerm int64) int {
 	var (
 		granted bool
 		newTerm int
 	)
 	if myTerm < int64(args.Term) {
-		rf.state.stepDown()
 		return rf.requestVoteAsFollower(args, reply, myTerm)
 	}
 	reply.Set(myTerm, granted)
@@ -92,12 +91,12 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 		newTerm int
 	)
 	// voteGranted is false
-	// although vote also has problem of data race, lock of currentTerm is enough
-	if int(myTerm) >= args.Term || (rf.identity.vote.term == args.Term && rf.identity.vote.voted) {
+	// although Vote also has problem of data race, lock of currentTerm is enough
+	if int(myTerm) >= args.Term || (rf.pState.Vote.term == args.Term && rf.pState.Vote.voted) {
 		newTerm = 0
 	} else {
 		// setVote may fail after get the lock
-		if rf.setVote(&vote{term: args.Term, voted: true, votedFor: args.CandidateId}) {
+		if rf.setVote(&Vote{term: args.Term, voted: true, votedFor: args.CandidateId}) {
 			// reset election timeout as the Fig.2 in paper
 			rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
 			granted = true
@@ -107,7 +106,7 @@ func (rf *Raft) requestVoteAsFollower(args *RequestVoteArgs, reply *RequestVoteR
 	reply.Set(myTerm, granted)
 	if newTerm != 0 {
 		rf.become(newTerm, follower)
-		//rf.identity.set(int(myTerm), newTerm)
+		//rf.PersistentState.set(int(myTerm), newTerm)
 	}
 	return newTerm
 }
@@ -151,16 +150,21 @@ func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVote
 // capitalized all field names in structs passed over RPC, and
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
-func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, result chan int) bool {
+func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, result chan *rpcResult) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	if !ok {
 		log.Printf("%d->%d:rpc error", rf.me, server)
-	} else {
-		result <- server
+	}
+	if result != nil {
+		result <- &rpcResult{ok, server}
 	}
 	return ok
 }
 
+type rpcResult struct {
+	ok     bool
+	server int
+}
 type electionResult struct {
 	success bool
 	maxTerm int
@@ -202,7 +206,7 @@ func (rf *Raft) electionOnce(term int) <-chan *electionResult {
 		5. 超时没有完成选举任期加1，进入下一轮
 	*/
 	res := make(chan *electionResult)
-	ready := make(chan int, len(rf.peers))
+	ready := make(chan *rpcResult, len(rf.peers))
 	go func() {
 		args := &RequestVoteArgs{
 			Term:        term,
@@ -224,13 +228,13 @@ func (rf *Raft) electionOnce(term int) <-chan *electionResult {
 		}
 		checked := make([]bool, len(rf.peers))
 		maxTerm := term
-		for i := range ready {
+		for re := range ready {
 			// impossible theoretically
-			if checked[i] {
+			if checked[re.server] {
 				continue
 			}
-			checked[i] = true
-			rt, rg := rps[i].Get()
+			checked[re.server] = true
+			rt, rg := rps[re.server].Get()
 			if rt > int64(maxTerm) {
 				maxTerm = int(rt)
 			}

@@ -10,6 +10,7 @@ package raft
 
 import (
 	"log"
+	"net/http"
 	"testing"
 )
 import "fmt"
@@ -55,6 +56,9 @@ func TestInitialElection2A(t *testing.T) {
 }
 
 func TestReElection2A(t *testing.T) {
+	go func() {
+		http.ListenAndServe(":6061", nil)
+	}()
 	servers := 3
 	cfg := make_config(t, servers, false, false)
 	defer cfg.cleanup()

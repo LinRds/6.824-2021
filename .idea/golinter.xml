@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <project version="4">
   <component name="GoLinterSettings">
+    <option name="enableCustomProjectDir" value="false" />
     <option name="enabledLinters">
       <list>
         <option value="exportloopref" />
@@ -26,7 +27,7 @@
         <option value="gocyclo" />
       </list>
     </option>
-    <option name="goLinterExe" value="$USER_HOME$/go/bin/golangci-lint" />
+    <option name="goLinterExe" value="$USER_HOME$/go/bin/gofumpt" />
     <option name="linterSelected" value="true" />
   </component>
 </project>
