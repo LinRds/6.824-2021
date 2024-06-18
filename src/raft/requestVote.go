@@ -151,7 +151,7 @@ func (rf *Raft) requestVoteAsCandidate(args *RequestVoteArgs, reply *RequestVote
 // that the caller passes the address of the reply struct with &, not
 // the struct itself.
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, result chan *rpcResult) bool {
-	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
+	ok := rf.peers[server].Call("Raft.RequestVote", args, reply, "")
 	if !ok {
 		log.Printf("%d->%d:rpc error", rf.me, server)
 	}

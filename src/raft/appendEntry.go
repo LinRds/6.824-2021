@@ -110,17 +110,17 @@ func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEn
 		}
 	}
 	if args.PrevLogIndex != 0 {
-		log.Println("prevIndex is not zero")
+		//log.Println("prevIndex is not zero")
 		func() {
 			rf.pState.logMu.Lock()
 			defer rf.pState.logMu.Unlock()
 			// reply false if log doesn't contain an entry at prevLogIndex
 			// whose term matches prevLogTerm
-			if args.PrevLogIndex-1 >= len(rf.pState.Logs) {
+			if args.PrevLogIndex > len(rf.pState.Logs) {
 				reply.Set(int64(term), false)
 				return
 			}
-			prevItem := rf.pState.Logs[args.PrevLogIndex]
+			prevItem := rf.pState.Logs[args.PrevLogIndex-1]
 			if prevItem == nil || prevItem.Term != args.PrevLogTerm {
 				reply.Set(int64(term), false)
 				return
@@ -164,6 +164,8 @@ func (rf *Raft) buildAppendArgs(server int) *AppendEntriesArgs {
 	if cpLen > 0 {
 		entries = make([]*LogEntry, cpLen)
 		copy(entries, rf.pState.Logs[prevIndex:])
+	} else {
+		return nil
 	}
 	var prevTerm int
 	if prevIndex == 0 {
@@ -181,8 +183,8 @@ func (rf *Raft) buildAppendArgs(server int) *AppendEntriesArgs {
 	}
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, result chan *rpcResult) bool {
-	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply)
+func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, result chan *rpcResult, mark string) bool {
+	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply, mark)
 	// TODO not ok also should send to result
 	if result != nil {
 		result <- &rpcResult{ok, server}
@@ -209,7 +211,7 @@ func (rf *Raft) handleAppendEntriesReply(server int, req *AppendEntriesArgs, rep
 	if int(term) > myTerm {
 		rf.become(int(term), follower)
 	} else {
-		log.Println("set nextindex to 0 with term", term)
+		log.Printf("set nextindex to %d with term %d", req.PrevLogIndex, term)
 		rf.state.setNextIndex(server, req.PrevLogIndex, false)
 	}
 }

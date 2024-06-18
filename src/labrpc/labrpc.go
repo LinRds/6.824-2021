@@ -62,6 +62,7 @@ import "sync/atomic"
 type reqMsg struct {
 	endname  interface{} // name of sending ClientEnd
 	svcMeth  string      // e.g. "Raft.AppendEntries"
+	mark     string
 	argsType reflect.Type
 	args     []byte
 	replyCh  chan replyMsg
@@ -81,10 +82,11 @@ type ClientEnd struct {
 // Call send an RPC, wait for the reply.
 // the return value indicates success; false means that
 // no reply was received from the server.
-func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}) bool {
+func (e *ClientEnd) Call(svcMeth string, args interface{}, reply interface{}, mark string) bool {
 	req := reqMsg{}
 	req.endname = e.endname
 	req.svcMeth = svcMeth
+	req.mark = mark
 	req.argsType = reflect.TypeOf(args)
 	req.replyCh = make(chan replyMsg)
 
@@ -153,6 +155,7 @@ func MakeNetwork() *Network {
 			select {
 			case xreq := <-rn.endCh:
 				atomic.AddInt32(&rn.count, 1)
+				log.Printf("request is %v in %s, len is %d", xreq.svcMeth, xreq.mark, len(xreq.args))
 				atomic.AddInt64(&rn.bytes, int64(len(xreq.args)))
 				go rn.processReq(xreq)
 			case <-rn.done:

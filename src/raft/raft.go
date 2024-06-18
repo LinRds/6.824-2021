@@ -30,8 +30,8 @@ import (
 )
 
 const (
-	ElectionTimeout  = 250
-	HeartbeatTimeout = 150
+	ElectionTimeout  = 700
+	HeartbeatTimeout = 500
 )
 
 // ApplyMsg as each Raft peer becomes aware that successive log entries are
@@ -164,16 +164,18 @@ func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
 			args := rf.buildAppendArgs(i)
 			rf.pState.logMu.RUnlock()
 			rf.state.mu.Unlock()
-			reply := &AppendEntriesReply{}
-			if rf.sendAppendEntries(i, args, reply, nil) {
-				rf.handleAppendEntriesReply(i, args, reply)
+			if args != nil {
+				reply := &AppendEntriesReply{}
+				if rf.sendAppendEntries(i, args, reply, nil, "logController loop") {
+					rf.handleAppendEntriesReply(i, args, reply)
+				}
 			}
 			//if len(rf.pState.Logs) != rf.state.nextIndex[i] {
 			//} else {
 			//	rf.pState.logMu.RUnlock()
 			//	rf.state.mu.Unlock()
 			//}
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(500 * time.Millisecond)
 		}
 	}
 }
@@ -289,7 +291,7 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	})
 	index = len(rf.pState.Logs)
 	ready := make(chan *rpcResult, len(rf.peers))
-	prevLogIndex, prevLogTerm := rf.pState.lastLog()
+	//prevLogIndex, prevLogTerm := rf.pState.lastLog()
 	nl := len(rf.pState.Logs)
 	replys := make([]*AppendEntriesReply, len(rf.peers))
 	for i := range rf.peers {
@@ -301,20 +303,21 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			rf.state.mu.Lock()
 			defer rf.state.mu.Unlock()
 			if nl-rf.state.nextIndex[i]+1 < 0 {
-				log.Fatalf("nl is %d, nextIndex is %d", nl, rf.state.nextIndex[i])
+				log.Fatalf("error! nl is %d, nextIndex is %d", nl, rf.state.nextIndex[i])
 			} else {
-				log.Printf("nl is %d, nextIndex is %d", nl, rf.state.nextIndex[i])
+				//log.Printf("nl is %d, nextIndex is %d", nl, rf.state.nextIndex[i])
 			}
 			entries := make([]*LogEntry, nl-rf.state.nextIndex[i]+1)
 			copy(entries, rf.pState.Logs[rf.state.nextIndex[i]-1:])
-			go rf.sendAppendEntries(i, &AppendEntriesArgs{
-				Term:         term,
-				LeaderId:     rf.me,
-				PrevLogIndex: prevLogIndex,
-				PrevLogTerm:  prevLogTerm,
-				Entries:      entries,
-				LeaderCommit: rf.state.commitIndex,
-			}, replys[i], ready)
+			go rf.sendAppendEntries(i, rf.buildAppendArgs(i), replys[i], ready, "start")
+			//go rf.sendAppendEntries(i, &AppendEntriesArgs{
+			//	Term:         term,
+			//	LeaderId:     rf.me,
+			//	PrevLogIndex: prevLogIndex,
+			//	PrevLogTerm:  prevLogTerm,
+			//	Entries:      entries,
+			//	LeaderCommit: rf.state.commitIndex,
+			//}, replys[i], ready)
 		}()
 	}
 	accept := 1
@@ -397,8 +400,12 @@ func (rf *Raft) heartbeat(stopCh chan struct{}) {
 		case <-stopCh:
 			return
 		default:
-			since := time.Since(time.UnixMilli(rf.lastHeartbeat.Load()))
-			if since >= HeartbeatTimeout {
+			now := time.Now()
+			last := rf.lastHeartbeat.Load()
+			since := now.Sub(time.UnixMilli(last))
+			if since.Milliseconds() >= HeartbeatTimeout {
+				// appendEntries RPC also can refresh this time
+				rf.lastHeartbeat.CompareAndSwap(last, now.UnixMilli())
 				for i := 0; i < len(rf.peers); i++ {
 					if i == rf.me {
 						continue
@@ -410,9 +417,8 @@ func (rf *Raft) heartbeat(stopCh chan struct{}) {
 						PrevLogTerm:  0,
 						Entries:      nil,
 						LeaderCommit: 0,
-					}, &AppendEntriesReply{}, nil)
+					}, &AppendEntriesReply{}, nil, "heartbeat")
 				}
-				rf.lastHeartbeat.Store(time.Now().UnixMilli())
 			}
 		}
 	}
