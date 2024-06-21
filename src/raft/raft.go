@@ -94,6 +94,7 @@ func (rf *Raft) updateLogState() {
 		if rf.pState.Logs[i] == nil {
 			log.Fatalf("raft [%d] log state is nil", rf.me)
 		}
+		log.Printf("server %d sync apply, cmd is %v", rf.me, rf.pState.Logs[i].Cmd)
 		syncApply(rf.applyCh, rf.pState.Logs[i].Cmd, rf.pState.Logs[i].Index)
 	}
 	rf.state.lastApplied = rf.state.commitIndex
@@ -164,18 +165,20 @@ func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
 			args := rf.buildAppendArgs(i)
 			rf.pState.logMu.RUnlock()
 			rf.state.mu.Unlock()
-			if args != nil {
-				reply := &AppendEntriesReply{}
-				if rf.sendAppendEntries(i, args, reply, nil, "logController loop") {
-					rf.handleAppendEntriesReply(i, args, reply)
-				}
+			// TODO 等到能够确定matchIndex的更新机制后，尝试减少不必要的
+			reply := &AppendEntriesReply{}
+			if rf.sendAppendEntries(i, args, reply, nil, "logController loop") {
+				log.Printf("leader commit is %d in log controller loop", args.LeaderCommit)
+				rf.state.mu.Lock()
+				rf.handleAppendEntriesReply(i, args, reply)
+				rf.state.mu.Unlock()
 			}
 			//if len(rf.pState.Logs) != rf.state.nextIndex[i] {
 			//} else {
 			//	rf.pState.logMu.RUnlock()
 			//	rf.state.mu.Unlock()
 			//}
-			time.Sleep(500 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 		}
 	}
 }
@@ -309,7 +312,15 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 			}
 			entries := make([]*LogEntry, nl-rf.state.nextIndex[i]+1)
 			copy(entries, rf.pState.Logs[rf.state.nextIndex[i]-1:])
-			go rf.sendAppendEntries(i, rf.buildAppendArgs(i), replys[i], ready, "start")
+			go func(server int) {
+				arg := rf.buildAppendArgs(server)
+				if rf.sendAppendEntries(server, arg, replys[server], ready, "start") {
+					log.Printf("leader commit is %d in start", arg.LeaderCommit)
+					rf.state.mu.Lock()
+					defer rf.state.mu.Unlock()
+					rf.handleAppendEntriesReply(server, arg, replys[server])
+				}
+			}(i)
 			//go rf.sendAppendEntries(i, &AppendEntriesArgs{
 			//	Term:         term,
 			//	LeaderId:     rf.me,
@@ -410,6 +421,7 @@ func (rf *Raft) heartbeat(stopCh chan struct{}) {
 					if i == rf.me {
 						continue
 					}
+					// TODO 变成普通的appendEntries请求
 					rf.sendAppendEntries(i, &AppendEntriesArgs{
 						Term:         term,
 						LeaderId:     rf.me,

@@ -81,9 +81,9 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 		return
 	}
 	rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-	if args.Entries == nil {
-		return
-	}
+	//if args.Entries == nil {
+	//	return
+	//}
 	switch id {
 	case leader:
 		rf.appendEntriesAsLeader(args, reply, term)
@@ -117,11 +117,13 @@ func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEn
 			// reply false if log doesn't contain an entry at prevLogIndex
 			// whose term matches prevLogTerm
 			if args.PrevLogIndex > len(rf.pState.Logs) {
+				log.Println("append fail for not have prevlogindex")
 				reply.Set(int64(term), false)
 				return
 			}
 			prevItem := rf.pState.Logs[args.PrevLogIndex-1]
 			if prevItem == nil || prevItem.Term != args.PrevLogTerm {
+				log.Println("append fail for prev log not match")
 				reply.Set(int64(term), false)
 				return
 			}
@@ -131,6 +133,7 @@ func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEn
 	defer rf.pState.logMu.Unlock()
 	rf.state.mu.Lock()
 	defer rf.state.mu.Unlock()
+	log.Printf("server %d---->start append entries<----", rf.me)
 	// append any new entries not already in the log
 	rf.pState.Logs = append(rf.pState.Logs[:args.PrevLogIndex], args.Entries...)
 	if args.LeaderCommit > rf.state.commitIndex {
@@ -140,6 +143,8 @@ func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEn
 	// log[lastApplied] to state machine
 	if rf.state.commitIndex > rf.state.lastApplied {
 		rf.updateLogState()
+	} else {
+		log.Printf("server %d, commit index is %d, last applied is %d", rf.me, rf.state.commitIndex, rf.state.lastApplied)
 	}
 	reply.Set(int64(term), true)
 }
@@ -164,8 +169,6 @@ func (rf *Raft) buildAppendArgs(server int) *AppendEntriesArgs {
 	if cpLen > 0 {
 		entries = make([]*LogEntry, cpLen)
 		copy(entries, rf.pState.Logs[prevIndex:])
-	} else {
-		return nil
 	}
 	var prevTerm int
 	if prevIndex == 0 {
@@ -205,10 +208,12 @@ func (rf *Raft) handleAppendEntriesReply(server int, req *AppendEntriesArgs, rep
 	if success {
 		log.Printf("term: %d, leader is %d and follower is %d,  success append entry", term, rf.me, server)
 		rf.state.setNextIndex(server, req.PrevLogIndex+1+len(req.Entries), true)
+		rf.state.matchIndex[server] = max(rf.state.matchIndex[server], req.PrevLogIndex+len(req.Entries))
 		return
-		// TODO how to update matchIndex
 	}
 	if int(term) > myTerm {
+		rf.pState.mu.Lock()
+		defer rf.pState.mu.Unlock()
 		rf.become(int(term), follower)
 	} else {
 		log.Printf("set nextindex to %d with term %d", req.PrevLogIndex, term)
