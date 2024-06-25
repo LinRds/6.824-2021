@@ -57,7 +57,7 @@ func TestInitialElection2A(t *testing.T) {
 
 func TestReElection2A(t *testing.T) {
 	go func() {
-		http.ListenAndServe(":6061", nil)
+		http.ListenAndServe(":6060", nil)
 	}()
 	servers := 3
 	cfg := make_config(t, servers, false, false)

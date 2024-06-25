@@ -19,8 +19,8 @@
     <inspection_tool class="GoContextTodo" enabled="true" level="WEAK WARNING" enabled_by_default="false">
       <scope name="Project Files" level="WARNING" enabled="true" editorAttributes="WARNING_ATTRIBUTES" />
     </inspection_tool>
-    <inspection_tool class="GoConvertStringLiterals" enabled="true" level="INFORMATION" enabled_by_default="false">
-      <scope name="Project Files" level="WARNING" enabled="true" editorAttributes="WARNING_ATTRIBUTES" />
+    <inspection_tool class="GoConvertStringLiterals" enabled="false" level="INFORMATION" enabled_by_default="false">
+      <scope name="Project Files" level="WARNING" enabled="false" editorAttributes="WARNING_ATTRIBUTES" />
     </inspection_tool>
     <inspection_tool class="GoDeferGo" enabled="true" level="WEAK WARNING" enabled_by_default="false">
       <scope name="Project Files" level="WARNING" enabled="true" editorAttributes="WARNING_ATTRIBUTES" />
@@ -83,9 +83,6 @@
       <scope name="Project Files" level="WARNING" enabled="true" editorAttributes="WARNING_ATTRIBUTES" />
     </inspection_tool>
     <inspection_tool class="GoLeadingWhitespaceInDirectiveComment" enabled="true" level="WARNING" enabled_by_default="false">
-      <scope name="Project Files" level="WARNING" enabled="true" editorAttributes="WARNING_ATTRIBUTES" />
-    </inspection_tool>
-    <inspection_tool class="GoLinter" enabled="true" level="WARNING" enabled_by_default="false">
       <scope name="Project Files" level="WARNING" enabled="true" editorAttributes="WARNING_ATTRIBUTES" />
     </inspection_tool>
     <inspection_tool class="GoLoopClosure" enabled="true" level="WARNING" enabled_by_default="false">
@@ -181,7 +178,7 @@
     <inspection_tool class="GoUnreachableCode" enabled="true" level="WARNING" enabled_by_default="false">
       <scope name="Project Files" level="WARNING" enabled="true" editorAttributes="WARNING_ATTRIBUTES" />
     </inspection_tool>
-    <inspection_tool class="GoUnsortedImport" enabled="true" level="WEAK WARNING" enabled_by_default="false">
+    <inspection_tool class="GoUnsortedImport" enabled="true" level="WEAK WARNING" enabled_by_default="true">
       <scope name="Project Files" level="WARNING" enabled="true" editorAttributes="WARNING_ATTRIBUTES" />
     </inspection_tool>
     <inspection_tool class="GoUnusedCallResult" enabled="true" level="WARNING" enabled_by_default="false">

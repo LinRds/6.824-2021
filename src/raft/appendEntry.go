@@ -1,14 +1,19 @@
 package raft
 
 import (
+	"fmt"
 	"log"
-	"sync"
 	"sync/atomic"
-	"time"
 )
+
+type termLog struct {
+	Term  int
+	Index int
+}
 
 type LogEntry struct {
 	Term  int
+	Count int
 	Index int
 	Cmd   any
 }
@@ -41,149 +46,12 @@ func (a *AppendEntriesReply) Get() (int64, bool) {
 	return int64(term), g == 1
 }
 
-type volatileState struct {
-	mu          sync.RWMutex
-	commitIndex int // index of highest log entry known to be committed(initialized to 0, increases monotonically)
-	lastApplied int // index of highest log entry applied to state machine(initialized to 0, increases monotonically)
-	//lastApplied atomic.Int64
-	nextIndex  []int // only for leader. for each server, index of the next log entry to send to that server(initialized to leader last log index + 1)
-	matchIndex []int // only for leader. for each server, index of highest log entry known to be replicated on server(initialized to 0, increases monotonically)
-	stopChan   chan struct{}
-}
-
-func (vs *volatileState) init(n int, lastIndex int) {
-	vs.nextIndex = make([]int, n)
-	for i := range vs.nextIndex {
-		vs.nextIndex[i] = lastIndex
-	}
-	vs.matchIndex = make([]int, n)
-	vs.stopChan = make(chan struct{})
-}
-
-func (vs *volatileState) setNextIndex(server, index int, inc bool) {
-	vs.mu.Lock()
-	defer vs.mu.Unlock()
-	if inc && vs.nextIndex[server] >= index {
-		return
-	}
-	vs.nextIndex[server] = index
-}
-
 func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	if args == nil {
 		return
 	}
-	rf.pState.mu.Lock()
-	defer rf.pState.mu.Unlock()
-	term, id := rf.pState.get()
-	if term > args.Term {
-		reply.Set(int64(term), false)
-		return
-	}
-	rf.lastHeartbeatFromLeader.Store(time.Now().UnixMilli())
-	//if args.Entries == nil {
-	//	return
-	//}
-	switch id {
-	case leader:
-		rf.appendEntriesAsLeader(args, reply, term)
-	case follower:
-		rf.appendEntriesAsFollower(args, reply, term)
-	case candidate:
-		rf.appendEntriesAsCandidate(args, reply, term)
-	}
-}
-
-func (rf *Raft) appendEntriesAsLeader(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	_, set := rf.become(args.Term, follower)
-	if !set {
-		return
-	}
-	rf.appendEntriesAsFollower(args, reply, args.Term)
-}
-
-func (rf *Raft) appendEntriesAsFollower(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	if term < args.Term {
-		_, set := rf.become(args.Term, follower)
-		if !set {
-			return
-		}
-	}
-	if args.PrevLogIndex != 0 {
-		//log.Println("prevIndex is not zero")
-		func() {
-			rf.pState.logMu.Lock()
-			defer rf.pState.logMu.Unlock()
-			// reply false if log doesn't contain an entry at prevLogIndex
-			// whose term matches prevLogTerm
-			if args.PrevLogIndex > len(rf.pState.Logs) {
-				log.Println("append fail for not have prevlogindex")
-				reply.Set(int64(term), false)
-				return
-			}
-			prevItem := rf.pState.Logs[args.PrevLogIndex-1]
-			if prevItem == nil || prevItem.Term != args.PrevLogTerm {
-				log.Println("append fail for prev log not match")
-				reply.Set(int64(term), false)
-				return
-			}
-		}()
-	}
-	rf.pState.logMu.Lock()
-	defer rf.pState.logMu.Unlock()
-	rf.state.mu.Lock()
-	defer rf.state.mu.Unlock()
-	log.Printf("server %d---->start append entries<----", rf.me)
-	// append any new entries not already in the log
-	rf.pState.Logs = append(rf.pState.Logs[:args.PrevLogIndex], args.Entries...)
-	if args.LeaderCommit > rf.state.commitIndex {
-		rf.state.commitIndex = min(args.LeaderCommit, len(rf.pState.Logs))
-	}
-	// if commitIndex > lastApplied: increment lastApplied, apply
-	// log[lastApplied] to state machine
-	if rf.state.commitIndex > rf.state.lastApplied {
-		rf.updateLogState()
-	} else {
-		log.Printf("server %d, commit index is %d, last applied is %d", rf.me, rf.state.commitIndex, rf.state.lastApplied)
-	}
-	reply.Set(int64(term), true)
-}
-
-func (rf *Raft) appendEntriesAsCandidate(args *AppendEntriesArgs, reply *AppendEntriesReply, term int) {
-	_, set := rf.become(args.Term, follower)
-	if !set {
-		return
-	}
-	rf.appendEntriesAsFollower(args, reply, args.Term)
-}
-
-// no lock, lock outside
-func (rf *Raft) buildAppendArgs(server int) *AppendEntriesArgs {
-	prevIndex := rf.state.nextIndex[server] - 1
-	if prevIndex < 0 {
-		log.Fatalf("invalid nextIndex: %v", rf.state.nextIndex)
-	}
-	// nextIndex start from 1
-	cpLen := max(0, len(rf.pState.Logs)-prevIndex)
-	var entries []*LogEntry
-	if cpLen > 0 {
-		entries = make([]*LogEntry, cpLen)
-		copy(entries, rf.pState.Logs[prevIndex:])
-	}
-	var prevTerm int
-	if prevIndex == 0 {
-		prevTerm = 0
-	} else {
-		prevTerm = rf.pState.Logs[prevIndex-1].Term
-	}
-	return &AppendEntriesArgs{
-		Term:         rf.pState.CurrentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: prevIndex,
-		PrevLogTerm:  prevTerm,
-		Entries:      entries,
-		LeaderCommit: rf.state.commitIndex,
-	}
+	rf.appendEntriesReqCh <- args
+	reply.TermAndSuccess = <-rf.appendEntriesRepCh
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, result chan *rpcResult, mark string) bool {
@@ -195,28 +63,62 @@ func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *Ap
 	return ok
 }
 
-func (rf *Raft) handleAppendEntriesReply(server int, req *AppendEntriesArgs, reply *AppendEntriesReply) {
-	myTerm, id := rf.GetState()
-	if !id {
+type appendEntryResult struct {
+	server       int
+	stateVersion int
+	reply        *AppendEntriesReply
+	prevLogIndex int
+	elemLength   int
+}
+
+func versionNotMatch(v1, v2 int) string {
+	return fmt.Sprintf("version not match, expected %d, got %d", v1, v2)
+}
+
+func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
+	server := re.server
+	// TODO 这里可能有问题，还没有思考什么时候更新version，可能会有version更新但是不该return的情况
+	if !rf.state.match(re.stateVersion) {
+		log.Printf(versionNotMatch(rf.state.version, re.stateVersion))
 		return
 	}
-	term, success := reply.Get()
+	myTerm := rf.state.getTerm()
+	term, success := re.reply.Get()
 	if term == 0 {
 		log.Println("term is 0")
 		return
 	}
 	if success {
-		log.Printf("term: %d, leader is %d and follower is %d,  success append entry", term, rf.me, server)
-		rf.state.setNextIndex(server, req.PrevLogIndex+1+len(req.Entries), true)
-		rf.state.matchIndex[server] = max(rf.state.matchIndex[server], req.PrevLogIndex+len(req.Entries))
-		return
-	}
-	if int(term) > myTerm {
-		rf.pState.mu.Lock()
-		defer rf.pState.mu.Unlock()
-		rf.become(int(term), follower)
+		//log.Printf("term: %d, leader is %d and follower is %d,  success append entry", myTerm, rf.me, server)
+		for i := re.prevLogIndex + 1; i <= re.prevLogIndex+re.elemLength; i++ {
+			rf.state.pState.Logs[i-1].Count++
+			if rf.isMajority(rf.state.pState.Logs[i-1].Count) {
+				key := termLog{
+					Term:  int(term),
+					Index: i,
+				}
+				if rf.startReplyCh[key] != nil {
+					rf.startReplyCh[key] <- &startRes{
+						index:    i,
+						term:     int(term),
+						isLeader: true,
+					}
+					if rf.state.setCommitIndex(i + 1) {
+						syncApply(rf.applyCh, rf.state.pState.Logs[i-1].Cmd, rf.state.pState.Logs[i-1].Index)
+					}
+					delete(rf.startReplyCh, key)
+				}
+			}
+		}
+		rf.state.setNextIndex(server, re.prevLogIndex+re.elemLength+1, true)
+		rf.state.setMatchIndex(server, max(rf.state.getMatchIndex(server), re.prevLogIndex+re.elemLength))
 	} else {
-		log.Printf("set nextindex to %d with term %d", req.PrevLogIndex, term)
-		rf.state.setNextIndex(server, req.PrevLogIndex, false)
+		if int(term) > myTerm {
+			rf.state.setTerm(int(term))
+			rf.id.setState(rf, follower)
+		} else {
+			log.Printf("set nextindex to %d with term %d", re.prevLogIndex, term)
+			rf.state.setNextIndex(server, re.prevLogIndex, false)
+		}
 	}
 }

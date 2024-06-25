@@ -155,7 +155,7 @@ func MakeNetwork() *Network {
 			select {
 			case xreq := <-rn.endCh:
 				atomic.AddInt32(&rn.count, 1)
-				log.Printf("request is %v in %s, len is %d", xreq.svcMeth, xreq.mark, len(xreq.args))
+				//log.Printf("request is %v in %s, len is %d", xreq.svcMeth, xreq.mark, len(xreq.args))
 				atomic.AddInt64(&rn.bytes, int64(len(xreq.args)))
 				go rn.processReq(xreq)
 			case <-rn.done:
