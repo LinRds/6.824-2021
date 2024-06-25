@@ -14,11 +14,10 @@ func (ps *PersistentState) copy() *PersistentState {
 }
 
 type volatileState struct {
-	commitIndex int // index of highest log entry known to be committed(initialized to 0, increases monotonically)
-	lastApplied int // index of highest log entry applied to state machine(initialized to 0, increases monotonically)
-	//lastApplied atomic.Int64
-	nextIndex  []int // only for leader. for each server, index of the next log entry to send to that server(initialized to leader last log index + 1)
-	matchIndex []int // only for leader. for each server, index of highest log entry known to be replicated on server(initialized to 0, increases monotonically)
+	commitIndex int   // index of highest log entry known to be committed(initialized to 0, increases monotonically)
+	lastApplied int   // index of highest log entry applied to state machine(initialized to 0, increases monotonically)
+	nextIndex   []int // only for leader. for each server, index of the next log entry to send to that server(initialized to leader last log index + 1)
+	matchIndex  []int // only for leader. for each server, index of highest log entry known to be replicated on server(initialized to 0, increases monotonically)
 }
 
 func (vs *volatileState) copy() *volatileState {
