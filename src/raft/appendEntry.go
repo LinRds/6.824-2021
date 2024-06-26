@@ -109,8 +109,9 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 						term:     int(term),
 						isLeader: true,
 					}
-					if rf.state.setCommitIndex(i + 1) {
-						syncApply(rf.applyCh, rf.state.pState.Logs[i-1].Cmd, rf.state.pState.Logs[i-1].Index)
+					if rf.state.setCommitIndex(i) {
+						rf.updateLogState()
+						//syncApply(rf.applyCh, rf.state.pState.Logs[i-1].Cmd, rf.state.pState.Logs[i-1].Index)
 					}
 					delete(rf.startReplyCh, key)
 				}

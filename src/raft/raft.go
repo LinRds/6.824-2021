@@ -158,6 +158,7 @@ func (rf *Raft) updateLogState() {
 			log.Fatalf("raft [%d] log state is nil", rf.me)
 		}
 		//log.Printf("server %d sync apply, cmd is %v, index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Index)
+		log.Printf("server %d sync log, cmd is %v and index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Index)
 		syncApply(rf.applyCh, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Index)
 	}
 	rf.state.vState.lastApplied = rf.state.vState.commitIndex
@@ -327,6 +328,7 @@ func (rf *Raft) handleStart(cmd *startReq) {
 	index := rf.state.logLen() + 1
 	rf.startReplyCh[termLog{Term: term, Index: index}] = repCh
 	rf.state.logAppend(&LogEntry{
+		Count: 1,
 		Term:  rf.state.getTerm(),
 		Index: index,
 		Cmd:   cmd.cmd,

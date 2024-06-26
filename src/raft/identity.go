@@ -86,6 +86,16 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	rf.lastHeartbeatFromLeader = time.Now()
 	// reply new term for receiver to validate whether it is a reply for old term
 	return RpcAccept(rf.state.getTerm())
+	lt, li := rf.state.lastLogEntry()
+	// safety
+	if lt > args.LastLogTerm || (lt == args.LastLogTerm && li > args.LastLogIndex) {
+		rf.state.setTerm(args.Term)
+		return RpcRefuse(rf.state.getTerm())
+	}
+	rf.setVote(&Vote{term: args.Term, voted: true, votedFor: args.CandidateId})
+	rf.state.setTerm(args.Term)
+	rf.lastHeartbeatFromLeader = time.Now()
+	return RpcAccept(rf.state.getTerm())
 }
 
 func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {

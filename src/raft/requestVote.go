@@ -103,9 +103,12 @@ func (rf *Raft) electionOnce(term int) {
 		5. 超时没有完成选举任期加1，进入下一轮
 	*/
 	log.Printf("server %d start election for term %d", rf.me, term)
+	lt, li := rf.state.lastLogEntry()
 	args := &RequestVoteArgs{
-		Term:        term,
-		CandidateId: rf.me,
+		Term:         term,
+		CandidateId:  rf.me,
+		LastLogIndex: li,
+		LastLogTerm:  lt,
 	}
 	for i := range rf.peers {
 		if i == rf.me {

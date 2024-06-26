@@ -1,5 +1,7 @@
 package raft
 
+import "log"
+
 // PersistentState Updated on stable storage before responding to RPC
 type PersistentState struct {
 	CurrentTerm int
@@ -54,6 +56,14 @@ type State struct {
 	vState  *volatileState
 }
 
+func (s *State) lastLogEntry() (int, int) {
+	n := s.logLen()
+	if n == 0 {
+		return -1, -1
+	}
+	return s.pState.Logs[n-1].Term, s.pState.Logs[n-1].Index
+}
+
 func (s *State) setCommitIndex(index int) bool {
 	set := false
 	if s.vState.commitIndex < index {
@@ -97,6 +107,10 @@ func (s *State) incTerm() {
 	s.pState.CurrentTerm++
 }
 func (s *State) setTerm(term int) {
+	if s.pState.CurrentTerm > term {
+		log.Println("new term is less than current in setTerm")
+		return
+	}
 	s.version++
 	s.pState.CurrentTerm = term
 	s.pState.Vote = nil
