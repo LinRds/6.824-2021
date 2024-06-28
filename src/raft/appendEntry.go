@@ -64,11 +64,23 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 		return
 	}
 	rf.appendEntriesReqCh <- args
-	reply.TermAndSuccess = <-rf.appendEntriesRepCh
-	term, success := reply.Get()
-	if !success {
-		reply.FastIndex, reply.FastTerm = rf.state.vState.fastIndex(int(term))
-	}
+	tp := <-rf.appendEntriesRepCh
+	reply.TermAndSuccess = tp.TermAndSuccess
+	reply.FastTerm = tp.FastTerm
+	reply.FastIndex = tp.FastIndex
+}
+
+func (rf *Raft) refuseAppendEntries(term int) *AppendEntriesReply {
+	reply := new(AppendEntriesReply)
+	reply.TermAndSuccess = RpcRefuse(term)
+	reply.FastTerm, reply.FastIndex = rf.state.vState.fastIndex(term)
+	return reply
+}
+
+func (rf *Raft) acceptAppendEntries(term int) *AppendEntriesReply {
+	reply := new(AppendEntriesReply)
+	reply.TermAndSuccess = RpcAccept(term)
+	return reply
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *appendEntriesArg, reply *AppendEntriesReply, result chan *rpcResult, mark string) bool {
@@ -138,7 +150,7 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 			rf.state.setTerm(int(term))
 			rf.id.setState(rf, follower)
 		} else {
-			fastTerm, fastIndex := re.reply.FastIndex, re.reply.FastTerm
+			fastTerm, fastIndex := re.reply.FastTerm, re.reply.FastIndex
 			if fastTerm == -1 {
 				log.Printf("set nextindex to %d of server %d in term %d\n", re.prevLogIndex, re.server, term)
 				rf.state.setNextIndex(server, 1, false)

@@ -13,7 +13,7 @@ const (
 
 type identity interface {
 	replyVote(rf *Raft, args *RequestVoteArgs) int64
-	replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64
+	replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply
 	setState(rf *Raft, id int)
 	getState() int
 }
@@ -39,7 +39,7 @@ func (l *Leader) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	return rf.id.replyVote(rf, args)
 }
 
-func (l *Leader) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
+func (l *Leader) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
 	l.setState(rf, follower)
 	return rf.id.replyAppendEntries(rf, args)
 }
@@ -90,7 +90,7 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	return RpcAccept(rf.state.getTerm())
 }
 
-func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
+func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
 	term := rf.state.getTerm()
 	version := rf.state.version
 	defer rf.persistIfVersionMismatch(version)
@@ -99,18 +99,20 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
 	}
 	if term < args.Term {
 		rf.state.setTerm(args.Term)
+		term = args.Term
 	}
+
 	if args.PrevLogIndex != 0 {
 		if args.PrevLogIndex > len(rf.state.pState.Logs) {
-			log.Println("append fail for not have prevlogindex")
-			return RpcRefuse(rf.state.getTerm())
+			log.Println("server", rf.me, "append fail for not have prev log index")
+			return rf.refuseAppendEntries(term)
 		}
 		// reply false if log doesn't contain an entry at prevLogIndex
 		// whose term matches prevLogTerm
 		prevItem := rf.state.pState.Logs[args.PrevLogIndex-1]
 		if prevItem == nil || prevItem.Term != args.PrevLogTerm {
-			log.Println("append fail for prev log not match")
-			return RpcRefuse(rf.state.getTerm())
+			log.Printf("append fail for server %d: prev log not match\n", rf.me)
+			return rf.refuseAppendEntries(term)
 		}
 	}
 	for _, entry := range rf.state.pState.Logs[args.PrevLogIndex:] {
@@ -118,10 +120,6 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
 	}
 	//log.Printf(`---->server %d,start append entries<----`, rf.me)
 	// append any new entries not already in the log
-	rf.state.logAppend(args.Entries...)
-	if args.LeaderCommit > rf.state.vState.commitIndex {
-		rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs)))
-	}
 	rf.state.pState.Logs = append(rf.state.pState.Logs[:args.PrevLogIndex], args.Entries...)
 	for _, entry := range args.Entries {
 		if entry.Index > rf.state.vState.lastIndexEachTerm[entry.Term] {
@@ -133,7 +131,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
 	if rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs))) {
 		rf.updateLogState()
 	}
-	return RpcAccept(rf.state.getTerm())
+	return rf.acceptAppendEntries(term)
 }
 
 func (f *Follower) setState(rf *Raft, id int) {
@@ -170,7 +168,7 @@ func (c *Candidate) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	return rf.id.replyVote(rf, args)
 }
 
-func (c *Candidate) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
+func (c *Candidate) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
 	c.setState(rf, follower)
 	return rf.id.replyAppendEntries(rf, args)
 }

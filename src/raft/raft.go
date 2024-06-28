@@ -99,7 +99,7 @@ type Raft struct {
 	voteReqCh               chan *RequestVoteArgs
 	voteRepCh               chan int64
 	appendEntriesReqCh      chan *AppendEntriesArgs
-	appendEntriesRepCh      chan int64
+	appendEntriesRepCh      chan *AppendEntriesReply
 	appendEntryResCh        chan *appendEntryResult
 	startReqCh              chan *startReq
 }
@@ -111,7 +111,7 @@ func (rf *Raft) initChan() {
 	rf.voteReqCh = make(chan *RequestVoteArgs)
 	rf.voteRepCh = make(chan int64)
 	rf.appendEntriesReqCh = make(chan *AppendEntriesArgs)
-	rf.appendEntriesRepCh = make(chan int64)
+	rf.appendEntriesRepCh = make(chan *AppendEntriesReply)
 	rf.appendEntryResCh = make(chan *appendEntryResult, 10)
 	rf.startReqCh = make(chan *startReq, 10)
 }
@@ -443,7 +443,7 @@ func (rf *Raft) ticker() {
 		case appendReq := <-rf.appendEntriesReqCh:
 			term := rf.state.getTerm()
 			if term > appendReq.Term {
-				rf.appendEntriesRepCh <- RpcRefuse(term)
+				rf.appendEntriesRepCh <- rf.refuseAppendEntries(term)
 				continue
 			}
 			rf.lastHeartbeatFromLeader = time.Now()
