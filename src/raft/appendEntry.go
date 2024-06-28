@@ -3,6 +3,7 @@ package raft
 import (
 	"fmt"
 	"log"
+	"math/bits"
 	"sync/atomic"
 )
 
@@ -11,9 +12,19 @@ type termLog struct {
 	Index int
 }
 
+type bitMap uint64
+
+func (b bitMap) add(i int) bitMap {
+	return b | (1 << i)
+}
+
+func (b bitMap) len() int {
+	return bits.OnesCount64(uint64(b))
+}
+
 type LogEntry struct {
 	Term  int
-	Count int
+	Count bitMap
 	Index int
 	Cmd   any
 }
@@ -54,11 +65,20 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 	reply.TermAndSuccess = <-rf.appendEntriesRepCh
 }
 
-func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply, result chan *rpcResult, mark string) bool {
-	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args, reply, mark)
+func (rf *Raft) sendAppendEntries(server int, args *appendEntriesArg, reply *AppendEntriesReply, result chan *rpcResult, mark string) bool {
+	ok := rf.peers[server].Call("Raft.RequestAppendEntries", args.arg, reply, mark)
 	// TODO not ok also should send to result
 	if result != nil {
 		result <- &rpcResult{ok, server}
+	}
+	if ok {
+		rf.appendEntryResCh <- &appendEntryResult{
+			server:       server,
+			stateVersion: args.version,
+			reply:        reply,
+			prevLogIndex: args.arg.PrevLogIndex,
+			elemLength:   len(args.arg.Entries),
+		}
 	}
 	return ok
 }
@@ -97,23 +117,11 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 	if success {
 		//log.Printf("term: %d, leader is %d and follower is %d,  success append entry", myTerm, rf.me, server)
 		for i := re.prevLogIndex + 1; i <= re.prevLogIndex+re.elemLength; i++ {
-			rf.state.pState.Logs[i-1].Count++
-			if rf.isMajority(rf.state.pState.Logs[i-1].Count) {
-				key := termLog{
-					Term:  int(term),
-					Index: i,
-				}
-				if rf.startReplyCh[key] != nil {
-					rf.startReplyCh[key] <- &startRes{
-						index:    i,
-						term:     int(term),
-						isLeader: true,
-					}
-					if rf.state.setCommitIndex(i) {
-						rf.updateLogState()
-						//syncApply(rf.applyCh, rf.state.pState.Logs[i-1].Cmd, rf.state.pState.Logs[i-1].Index)
-					}
-					delete(rf.startReplyCh, key)
+			entry := rf.state.getLogEntry(i - 1)
+			entry.Count = entry.Count.add(re.server)
+			if rf.isMajority(entry.Count.len()) {
+				if rf.state.setCommitIndex(i) {
+					rf.updateLogState()
 				}
 			}
 		}
@@ -124,8 +132,11 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 			rf.state.setTerm(int(term))
 			rf.id.setState(rf, follower)
 		} else {
-			log.Printf("set nextindex to %d with term %d", re.prevLogIndex, term)
+			log.Printf("set nextindex to %d of %d with term %d\n", re.prevLogIndex, re.server, term)
 			rf.state.setNextIndex(server, re.prevLogIndex, false)
+			arg := rf.buildAppendArgs(re.server)
+
+			go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")
 		}
 	}
 }

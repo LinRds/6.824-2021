@@ -102,7 +102,6 @@ type Raft struct {
 	appendEntriesRepCh      chan int64
 	appendEntryResCh        chan *appendEntryResult
 	startReqCh              chan *startReq
-	startReplyCh            map[termLog]chan *startRes
 }
 
 func (rf *Raft) initChan() {
@@ -115,7 +114,6 @@ func (rf *Raft) initChan() {
 	rf.appendEntriesRepCh = make(chan int64)
 	rf.appendEntryResCh = make(chan *appendEntryResult)
 	rf.startReqCh = make(chan *startReq)
-	rf.startReplyCh = make(map[termLog]chan *startRes)
 }
 
 type startReq struct {
@@ -185,7 +183,6 @@ func (rf *Raft) buildAppendArgs(server int) *appendEntriesArg {
 		for i, item := range rf.state.pState.Logs[prevIndex:] {
 			entries[i] = &LogEntry{
 				Term:  item.Term,
-				Count: item.Count,
 				Index: item.Index,
 				Cmd:   item.Cmd,
 			}
@@ -218,16 +215,7 @@ func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
 			arg := rf.buildAppendArgs(i)
 			// TODO 等到能够确定matchIndex的更新机制后，尝试减少不必要的
 			reply := &AppendEntriesReply{}
-			if rf.sendAppendEntries(i, arg.arg, reply, nil, "logController loop") {
-				//log.Printf("leader commit is %d in log controller loop", arg.arg.LeaderCommit)
-				rf.appendEntryResCh <- &appendEntryResult{
-					server:       i,
-					stateVersion: arg.version,
-					reply:        reply,
-					prevLogIndex: arg.arg.PrevLogIndex,
-					elemLength:   len(arg.arg.Entries),
-				}
-			}
+			rf.sendAppendEntries(i, arg, reply, nil, "logController loop")
 			time.Sleep(100 * time.Millisecond)
 		}
 	}
@@ -326,14 +314,15 @@ func (rf *Raft) handleStart(cmd *startReq) {
 	}
 	version := rf.state.version
 	index := rf.state.logLen() + 1
-	rf.startReplyCh[termLog{Term: term, Index: index}] = repCh
-	rf.state.logAppend(&LogEntry{
-		Count: 1,
+	repCh <- &startRes{index: index, term: term, isLeader: true}
+	//rf.startReplyCh[termLog{Term: term, Index: index}] = repCh
+	entry := &LogEntry{
 		Term:  rf.state.getTerm(),
 		Index: index,
 		Cmd:   cmd.cmd,
-	})
-	//prevLogIndex, prevLogTerm := rf.pState.lastLog()
+	}
+	entry.Count = entry.Count.add(rf.me)
+	rf.state.logAppend(entry)
 	replys := make([]*AppendEntriesReply, len(rf.peers))
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
@@ -342,16 +331,7 @@ func (rf *Raft) handleStart(cmd *startReq) {
 		replys[i] = &AppendEntriesReply{}
 		arg := rf.buildAppendArgs(i)
 		go func(server int, arg *appendEntriesArg) {
-			if rf.sendAppendEntries(server, arg.arg, replys[server], nil, "start") {
-				log.Printf("leader commit is %d in start", arg.arg.LeaderCommit)
-				rf.appendEntryResCh <- &appendEntryResult{
-					server:       server,
-					stateVersion: arg.version,
-					reply:        replys[server],
-					prevLogIndex: arg.arg.PrevLogIndex,
-					elemLength:   len(arg.arg.Entries),
-				}
-			}
+			rf.sendAppendEntries(server, arg, replys[server], nil, "start")
 		}(i, arg)
 	}
 	rf.persistIfVersionMismatch(version)
@@ -415,15 +395,7 @@ func (rf *Raft) heartbeat() {
 		arg := rf.buildAppendArgs(i)
 		go func() {
 			reply := &AppendEntriesReply{}
-			if rf.sendAppendEntries(i, arg.arg, reply, nil, "heartbeat") {
-				rf.appendEntryResCh <- &appendEntryResult{
-					server:       i,
-					stateVersion: arg.version,
-					reply:        reply,
-					prevLogIndex: arg.arg.PrevLogIndex,
-					elemLength:   len(arg.arg.Entries),
-				}
-			}
+			rf.sendAppendEntries(i, arg, reply, nil, "heartbeat")
 		}()
 	}
 }

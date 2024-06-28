@@ -127,9 +127,10 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
 	if args.LeaderCommit > rf.state.vState.commitIndex {
 		rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs)))
 	}
+	rf.state.pState.Logs = append(rf.state.pState.Logs[:args.PrevLogIndex], args.Entries...)
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine
-	if rf.state.vState.commitIndex > rf.state.vState.lastApplied {
+	if rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs))) {
 		rf.updateLogState()
 	}
 	return RpcAccept(rf.state.getTerm())

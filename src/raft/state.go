@@ -56,6 +56,11 @@ type State struct {
 	vState  *volatileState
 }
 
+// The caller is responsible for ensuring the index is within bounds.
+func (s *State) getLogEntry(index int) *LogEntry {
+	return s.pState.Logs[index]
+}
+
 func (s *State) lastLogEntry() (int, int) {
 	n := s.logLen()
 	if n == 0 {
