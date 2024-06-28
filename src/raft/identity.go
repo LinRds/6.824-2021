@@ -24,15 +24,7 @@ type Leader struct {
 func (l *Leader) takingOffice(rf *Raft) {
 	log.Printf("server %d become leader", rf.me)
 
-	rf.state.vState.nextIndex = make([]int, len(rf.peers))
-	rf.state.vState.matchIndex = make([]int, len(rf.peers))
-	for i := range rf.peers {
-		if i == rf.me {
-			continue
-		}
-		rf.state.vState.matchIndex[i] = 0
-		rf.state.vState.nextIndex[i] = rf.state.logLen() + 1
-	}
+	rf.state.vState.init(len(rf.peers), rf.state.logLen()+1)
 }
 
 func (l *Leader) leavingOffice() {
@@ -121,6 +113,9 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
 			return RpcRefuse(rf.state.getTerm())
 		}
 	}
+	for _, entry := range rf.state.pState.Logs[args.PrevLogIndex:] {
+		delete(rf.state.vState.lastIndexEachTerm, entry.Term)
+	}
 	//log.Printf(`---->server %d,start append entries<----`, rf.me)
 	// append any new entries not already in the log
 	rf.state.logAppend(args.Entries...)
@@ -128,6 +123,11 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
 		rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs)))
 	}
 	rf.state.pState.Logs = append(rf.state.pState.Logs[:args.PrevLogIndex], args.Entries...)
+	for _, entry := range args.Entries {
+		if entry.Index > rf.state.vState.lastIndexEachTerm[entry.Term] {
+			rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
+		}
+	}
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine
 	if rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs))) {

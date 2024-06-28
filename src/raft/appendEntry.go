@@ -41,6 +41,8 @@ type AppendEntriesArgs struct {
 
 type AppendEntriesReply struct {
 	TermAndSuccess int64
+	FastIndex      int
+	FastTerm       int
 }
 
 func (a *AppendEntriesReply) Set(term int64, success bool) {
@@ -63,6 +65,10 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 	}
 	rf.appendEntriesReqCh <- args
 	reply.TermAndSuccess = <-rf.appendEntriesRepCh
+	term, success := reply.Get()
+	if !success {
+		reply.FastIndex, reply.FastTerm = rf.state.vState.fastIndex(int(term))
+	}
 }
 
 func (rf *Raft) sendAppendEntries(server int, args *appendEntriesArg, reply *AppendEntriesReply, result chan *rpcResult, mark string) bool {
@@ -132,8 +138,24 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 			rf.state.setTerm(int(term))
 			rf.id.setState(rf, follower)
 		} else {
-			log.Printf("set nextindex to %d of %d with term %d\n", re.prevLogIndex, re.server, term)
-			rf.state.setNextIndex(server, re.prevLogIndex, false)
+			fastTerm, fastIndex := re.reply.FastIndex, re.reply.FastTerm
+			if fastTerm == -1 {
+				log.Printf("set nextindex to %d of server %d in term %d\n", re.prevLogIndex, re.server, term)
+				rf.state.setNextIndex(server, 1, false)
+			} else if fastTerm == myTerm {
+				rf.state.setNextIndex(server, fastIndex+1, false)
+			} else {
+				// fastTerm < myTerm
+				// clip to avoid fail in TestRejoin2B, as disconnected leader may try to agree on some entries
+				fastIndex = min(fastIndex, rf.state.vState.lastIndexInTerm(fastTerm))
+				entry := rf.state.getLogEntry(fastIndex - 1)
+				if entry.Term != fastTerm {
+					log.Fatalf("expected fast term to be %d, got %d", fastTerm, entry.Term)
+				}
+				rf.state.setNextIndex(server, fastIndex+1, false)
+			}
+
+			//rf.state.setNextIndex(server, re.prevLogIndex, false)
 			arg := rf.buildAppendArgs(re.server)
 
 			go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")

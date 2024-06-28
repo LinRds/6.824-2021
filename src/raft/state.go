@@ -16,10 +16,11 @@ func (ps *PersistentState) copy() *PersistentState {
 }
 
 type volatileState struct {
-	commitIndex int   // index of highest log entry known to be committed(initialized to 0, increases monotonically)
-	lastApplied int   // index of highest log entry applied to state machine(initialized to 0, increases monotonically)
-	nextIndex   []int // only for leader. for each server, index of the next log entry to send to that server(initialized to leader last log index + 1)
-	matchIndex  []int // only for leader. for each server, index of highest log entry known to be replicated on server(initialized to 0, increases monotonically)
+	commitIndex       int   // index of highest log entry known to be committed(initialized to 0, increases monotonically)
+	lastApplied       int   // index of highest log entry applied to state machine(initialized to 0, increases monotonically)
+	nextIndex         []int // only for leader. for each server, index of the next log entry to send to that server(initialized to leader last log index + 1)
+	matchIndex        []int // only for leader. for each server, index of highest log entry known to be replicated on server(initialized to 0, increases monotonically)
+	lastIndexEachTerm map[int]int
 }
 
 func (vs *volatileState) copy() *volatileState {
@@ -29,6 +30,27 @@ func (vs *volatileState) copy() *volatileState {
 		nextIndex:   vs.nextIndex,
 		matchIndex:  vs.matchIndex,
 	}
+}
+
+func (vs *volatileState) fastIndex(term int) (int, int) {
+	lastCurTerm := vs.lastIndexInTerm(term)
+	if lastCurTerm != -1 {
+		return term, lastCurTerm
+	}
+	prevTerm := -1
+	for k := range vs.lastIndexEachTerm {
+		if k < term && k > prevTerm {
+			prevTerm = k
+		}
+	}
+	return prevTerm, vs.lastIndexEachTerm[prevTerm]
+}
+
+func (vs *volatileState) lastIndexInTerm(term int) int {
+	if v, ok := vs.lastIndexEachTerm[term]; ok {
+		return v
+	}
+	return -1
 }
 
 func (vs *volatileState) init(n int, lastIndex int) {
@@ -98,6 +120,7 @@ func (s *State) init() {
 		Logs:        make([]*LogEntry, 0, 10),
 	}
 	s.vState = new(volatileState)
+	s.vState.lastIndexEachTerm = make(map[int]int)
 }
 
 func (s *State) match(version int) bool {
