@@ -107,13 +107,13 @@ type Raft struct {
 func (rf *Raft) initChan() {
 	rf.stateCh = make(chan struct{}, 10)
 	rf.getStateCh = make(chan *stateRes, 10)
-	rf.electionResCh = make(chan *RequestVoteReply)
+	rf.electionResCh = make(chan *RequestVoteReply, 10)
 	rf.voteReqCh = make(chan *RequestVoteArgs)
 	rf.voteRepCh = make(chan int64)
 	rf.appendEntriesReqCh = make(chan *AppendEntriesArgs)
 	rf.appendEntriesRepCh = make(chan int64)
-	rf.appendEntryResCh = make(chan *appendEntryResult)
-	rf.startReqCh = make(chan *startReq)
+	rf.appendEntryResCh = make(chan *appendEntryResult, 10)
+	rf.startReqCh = make(chan *startReq, 10)
 }
 
 type startReq struct {
