@@ -77,7 +77,9 @@ func versionNotMatch(v1, v2 int) string {
 
 func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 	server := re.server
-	// TODO 这里可能有问题，还没有思考什么时候更新version，可能会有version更新但是不该return的情况
+	// 这里可能存在一种不应该返回的情况，就是version的改变是由logAppend引起的，而非term或者vote
+	// 但是这种情况下后续的心跳或者新的appendEntriesReq仍然可以达到日志同步的目的，所以这里返回
+	// 也不为错.
 	if !rf.state.match(re.stateVersion) {
 		log.Printf(versionNotMatch(rf.state.version, re.stateVersion))
 		return

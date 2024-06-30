@@ -19,12 +19,10 @@ type identity interface {
 }
 
 type Leader struct {
-	stopCh chan struct{}
 }
 
 func (l *Leader) takingOffice(rf *Raft) {
 	log.Printf("server %d become leader", rf.me)
-	l.stopCh = make(chan struct{})
 
 	rf.state.vState.nextIndex = make([]int, len(rf.peers))
 	rf.state.vState.matchIndex = make([]int, len(rf.peers))
@@ -38,7 +36,6 @@ func (l *Leader) takingOffice(rf *Raft) {
 }
 
 func (l *Leader) leavingOffice() {
-	close(l.stopCh)
 }
 
 func (l *Leader) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
@@ -76,8 +73,11 @@ func RpcRefuse(term int) int64 {
 func RpcAccept(term int) int64 {
 	return int64(pack(uint32(term), 1))
 }
+
 func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	term := rf.state.getTerm()
+	version := rf.state.version
+	defer rf.persistIfVersionMismatch(version)
 	if term >= args.Term || rf.state.isVoted() {
 		return RpcRefuse(term)
 	}
@@ -90,35 +90,37 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 
 func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
 	term := rf.state.getTerm()
+	version := rf.state.version
+	defer rf.persistIfVersionMismatch(version)
+	if args.Term < term {
+		return RpcRefuse(term)
+	}
 	if term < args.Term {
 		rf.state.setTerm(args.Term)
 	}
-
 	if args.PrevLogIndex != 0 {
 		if args.PrevLogIndex > len(rf.state.pState.Logs) {
 			log.Println("append fail for not have prevlogindex")
-			return RpcRefuse(term)
+			return RpcRefuse(rf.state.getTerm())
 		}
 		// reply false if log doesn't contain an entry at prevLogIndex
 		// whose term matches prevLogTerm
 		prevItem := rf.state.pState.Logs[args.PrevLogIndex-1]
 		if prevItem == nil || prevItem.Term != args.PrevLogTerm {
 			log.Println("append fail for prev log not match")
-			return RpcRefuse(term)
+			return RpcRefuse(rf.state.getTerm())
 		}
 	}
 	//log.Printf(`---->server %d,start append entries<----`, rf.me)
 	// append any new entries not already in the log
-	rf.state.pState.Logs = append(rf.state.pState.Logs[:args.PrevLogIndex], args.Entries...)
+	rf.state.logAppend(args.Entries...)
 	if args.LeaderCommit > rf.state.vState.commitIndex {
-		rf.state.vState.commitIndex = min(args.LeaderCommit, len(rf.state.pState.Logs))
+		rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs)))
 	}
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine
 	if rf.state.vState.commitIndex > rf.state.vState.lastApplied {
 		rf.updateLogState()
-	} else {
-		//log.Printf("server %d, commit index is %d, last applied is %d", rf.me, rf.state.vState.commitIndex, rf.state.vState.lastApplied)
 	}
 	return RpcAccept(rf.state.getTerm())
 }

@@ -64,6 +64,9 @@ func (s *State) setCommitIndex(index int) bool {
 }
 
 func (s *State) isVoted() bool {
+	if s.pState.Vote == nil {
+		return false
+	}
 	return s.pState.Vote.Voted
 }
 
@@ -94,7 +97,9 @@ func (s *State) incTerm() {
 	s.pState.CurrentTerm++
 }
 func (s *State) setTerm(term int) {
+	s.version++
 	s.pState.CurrentTerm = term
+	s.pState.Vote = nil
 }
 
 func (s *State) copy() *State {
@@ -117,8 +122,11 @@ func (s *State) getMatchIndex(server int) int {
 	return s.vState.matchIndex[server]
 }
 
-func (s *State) logAppend(entries *LogEntry) {
-	s.pState.Logs = append(s.pState.Logs, entries)
+func (s *State) logAppend(entries ...*LogEntry) {
+	if len(entries) > 0 {
+		s.version++
+	}
+	s.pState.Logs = append(s.pState.Logs, entries...)
 }
 
 func (s *State) logLen() int {

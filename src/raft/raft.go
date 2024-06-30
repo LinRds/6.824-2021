@@ -233,6 +233,7 @@ func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
 }
 
 func (rf *Raft) setVote(vote *Vote) {
+	rf.state.version++
 	rf.state.pState.Vote = vote
 }
 
@@ -254,9 +255,17 @@ func (rf *Raft) GetState() (int, bool) {
 	return term, isleader
 }
 
+func (rf *Raft) persistIfVersionMismatch(version int) {
+	if rf.state.match(version) {
+		return
+	}
+	rf.persist()
+}
+
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
+// it should be called before responding to RPCs as the paper say.
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
@@ -268,6 +277,7 @@ func (rf *Raft) persist() {
 	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
+	rf.state.version++
 }
 
 // restore previously persisted state.
@@ -313,6 +323,7 @@ func (rf *Raft) handleStart(cmd *startReq) {
 		repCh <- &startRes{index: -1, term: -1, isLeader: false}
 		return
 	}
+	version := rf.state.version
 	index := rf.state.logLen() + 1
 	rf.startReplyCh[termLog{Term: term, Index: index}] = repCh
 	rf.state.logAppend(&LogEntry{
@@ -341,6 +352,7 @@ func (rf *Raft) handleStart(cmd *startReq) {
 			}
 		}(i, arg)
 	}
+	rf.persistIfVersionMismatch(version)
 }
 
 // Start the service using Raft (e.g. a k/v server) wants to start
