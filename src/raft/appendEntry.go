@@ -88,6 +88,10 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 		log.Println("term is 0")
 		return
 	}
+	if success && int(term) != myTerm {
+		log.Println("receive reply from old term")
+		return
+	}
 	if success {
 		//log.Printf("term: %d, leader is %d and follower is %d,  success append entry", myTerm, rf.me, server)
 		for i := re.prevLogIndex + 1; i <= re.prevLogIndex+re.elemLength; i++ {

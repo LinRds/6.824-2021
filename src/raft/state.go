@@ -63,11 +63,14 @@ func (s *State) setCommitIndex(index int) bool {
 	return set
 }
 
+func (s *State) isVoted() bool {
+	return s.pState.Vote.Voted
+}
+
 func (s *State) voteForSelf(me int) {
 	s.pState.Vote = &Vote{
-		term:     s.pState.CurrentTerm,
-		votedFor: me,
-		voted:    true,
+		VotedFor: me,
+		Voted:    true,
 	}
 }
 func (s *State) init() {

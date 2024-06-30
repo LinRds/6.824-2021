@@ -77,18 +77,15 @@ func RpcAccept(term int) int64 {
 	return int64(pack(uint32(term), 1))
 }
 func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
-	// voteGranted is false
-	// although Vote also has problem of data race, lock of currentTerm is enough
 	term := rf.state.getTerm()
-	if term >= args.Term || (rf.state.pState.Vote.term == args.Term && rf.state.pState.Vote.voted) {
+	if term >= args.Term || rf.state.isVoted() {
 		return RpcRefuse(term)
 	}
-	if rf.setVote(&Vote{term: args.Term, voted: true, votedFor: args.CandidateId}) {
-		rf.state.setTerm(args.Term)
-		rf.lastHeartbeatFromLeader = time.Now()
-		return RpcAccept(rf.state.getTerm())
-	}
-	return RpcAccept(term)
+	rf.setVote(&Vote{Voted: true, VotedFor: args.CandidateId})
+	rf.state.setTerm(args.Term)
+	rf.lastHeartbeatFromLeader = time.Now()
+	// reply new term for receiver to validate whether it is a reply for old term
+	return RpcAccept(rf.state.getTerm())
 }
 
 func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
@@ -123,7 +120,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) int64 {
 	} else {
 		//log.Printf("server %d, commit index is %d, last applied is %d", rf.me, rf.state.vState.commitIndex, rf.state.vState.lastApplied)
 	}
-	return RpcAccept(term)
+	return RpcAccept(rf.state.getTerm())
 }
 
 func (f *Follower) setState(rf *Raft, id int) {

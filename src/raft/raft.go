@@ -18,6 +18,8 @@ package raft
 //
 
 import (
+	"6.824/labgob"
+	"bytes"
 	"log"
 	"math/rand"
 	//	"bytes"
@@ -62,9 +64,8 @@ func syncApply(applyCh chan ApplyMsg, cmd any, cmdIndex int) {
 }
 
 type Vote struct {
-	term     int
-	votedFor int
-	voted    bool
+	VotedFor int
+	Voted    bool
 }
 
 type stateRes struct {
@@ -231,13 +232,8 @@ func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
 	}
 }
 
-func (rf *Raft) setVote(vote *Vote) bool {
-	// old term cannot overwrite new term
-	if vote.term <= rf.state.pState.Vote.term {
-		return false
-	}
+func (rf *Raft) setVote(vote *Vote) {
 	rf.state.pState.Vote = vote
-	return true
 }
 
 func (rf *Raft) getState() *stateRes {
@@ -264,12 +260,14 @@ func (rf *Raft) GetState() (int, bool) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	// w := new(bytes.Buffer)
-	// e := labgob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(rf.state.pState)
+	if err != nil {
+		log.Fatal(err)
+	}
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 // restore previously persisted state.
