@@ -108,6 +108,8 @@ func (s *State) isVoted() bool {
 }
 
 func (s *State) voteForSelf(me int) {
+	versionIncLog("vote for self")
+	s.version++
 	s.pState.Vote = &Vote{
 		VotedFor: me,
 		Voted:    true,
@@ -119,6 +121,7 @@ func (s *State) init() {
 		Vote:        new(Vote),
 		Logs:        make([]*LogEntry, 0, 10),
 	}
+	s.version = 1
 	s.vState = new(volatileState)
 	s.vState.lastIndexEachTerm = make(map[int]int)
 }
@@ -132,6 +135,9 @@ func (s *State) getTerm() int {
 }
 
 func (s *State) incTerm() {
+	versionIncLog("inc term")
+	s.version++
+	s.pState.Vote = nil
 	s.pState.CurrentTerm++
 }
 func (s *State) setTerm(term int) {
@@ -139,6 +145,7 @@ func (s *State) setTerm(term int) {
 		log.Println("new term is less than current in setTerm")
 		return
 	}
+	versionIncLog("set term")
 	s.version++
 	s.pState.CurrentTerm = term
 	s.pState.Vote = nil
@@ -166,6 +173,7 @@ func (s *State) getMatchIndex(server int) int {
 
 func (s *State) logAppend(entries ...*LogEntry) {
 	if len(entries) > 0 {
+		versionIncLog("log append")
 		s.version++
 	}
 	s.pState.Logs = append(s.pState.Logs, entries...)

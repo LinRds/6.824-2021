@@ -70,21 +70,19 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	term := rf.state.getTerm()
 	version := rf.state.version
 	defer rf.persistIfVersionMismatch(version)
-	if term >= args.Term || rf.state.isVoted() {
-		return RpcRefuse(term)
+	if term > args.Term || (term == args.Term && rf.state.isVoted()) {
+		log.Printf("server %d refuse server %d for term and voted", rf.me, args.CandidateId)
+		log.Printf("my term is %d, other term is %d, my voted is %v", term, args.Term, rf.state.isVoted())
+		return RpcRefuse(rf.state.getTerm())
 	}
-	rf.setVote(&Vote{Voted: true, VotedFor: args.CandidateId})
-	rf.state.setTerm(args.Term)
-	rf.lastHeartbeatFromLeader = time.Now()
 	// reply new term for receiver to validate whether it is a reply for old term
-	return RpcAccept(rf.state.getTerm())
 	lt, li := rf.state.lastLogEntry()
 	// safety
 	if lt > args.LastLogTerm || (lt == args.LastLogTerm && li > args.LastLogIndex) {
 		rf.state.setTerm(args.Term)
 		return RpcRefuse(rf.state.getTerm())
 	}
-	rf.setVote(&Vote{term: args.Term, voted: true, votedFor: args.CandidateId})
+	rf.setVote(&Vote{Voted: true, VotedFor: args.CandidateId})
 	rf.state.setTerm(args.Term)
 	rf.lastHeartbeatFromLeader = time.Now()
 	return RpcAccept(rf.state.getTerm())
@@ -95,7 +93,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	version := rf.state.version
 	defer rf.persistIfVersionMismatch(version)
 	if args.Term < term {
-		return RpcRefuse(term)
+		return rf.refuseAppendEntries(term)
 	}
 	if term < args.Term {
 		rf.state.setTerm(args.Term)

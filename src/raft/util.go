@@ -11,3 +11,7 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	}
 	return
 }
+
+func versionIncLog(reason string) {
+	log.Printf("version inc for %s", reason)
+}

@@ -167,7 +167,6 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 				rf.state.setNextIndex(server, fastIndex+1, false)
 			}
 
-			//rf.state.setNextIndex(server, re.prevLogIndex, false)
 			arg := rf.buildAppendArgs(re.server)
 
 			go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")

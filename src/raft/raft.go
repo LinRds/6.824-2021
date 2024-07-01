@@ -222,6 +222,7 @@ func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
 }
 
 func (rf *Raft) setVote(vote *Vote) {
+	versionIncLog("set vote")
 	rf.state.version++
 	rf.state.pState.Vote = vote
 }
@@ -266,7 +267,6 @@ func (rf *Raft) persist() {
 	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
-	rf.state.version++
 }
 
 // restore previously persisted state.
