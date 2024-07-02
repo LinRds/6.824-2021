@@ -91,7 +91,6 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
 	term := rf.state.getTerm()
 	version := rf.state.version
-	defer rf.persistIfVersionMismatch(version)
 	if args.Term < term {
 		return rf.refuseAppendEntries(term)
 	}
@@ -118,12 +117,14 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	}
 	//log.Printf(`---->server %d,start append entries<----`, rf.me)
 	// append any new entries not already in the log
-	rf.state.pState.Logs = append(rf.state.pState.Logs[:args.PrevLogIndex], args.Entries...)
+	rf.state.pState.Logs = rf.state.pState.Logs[:args.PrevLogIndex]
+	rf.state.logAppend(args.Entries...)
 	for _, entry := range args.Entries {
 		if entry.Index > rf.state.vState.lastIndexEachTerm[entry.Term] {
 			rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
 		}
 	}
+	rf.persistIfVersionMismatch(version)
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine
 	if rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs))) {
