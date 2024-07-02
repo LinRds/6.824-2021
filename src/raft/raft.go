@@ -59,7 +59,6 @@ type ApplyMsg struct {
 }
 
 func syncApply(applyCh chan ApplyMsg, cmd any, cmdIndex int) {
-	log.Printf("sync log, cmd is %v and index is %d", cmd, cmdIndex)
 	applyCh <- ApplyMsg{CommandValid: true, Command: cmd, CommandIndex: cmdIndex}
 }
 
@@ -267,6 +266,7 @@ func (rf *Raft) persist() {
 	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
+	log.Printf("server %d success persist, data len is %d", rf.me, len(data))
 }
 
 // restore previously persisted state.
@@ -278,9 +278,11 @@ func (rf *Raft) readPersist(data []byte) {
 	// Example:
 	r := bytes.NewBuffer(data)
 	d := labgob.NewDecoder(r)
-	if err := d.Decode(&rf.state.pState); err != nil {
+	var pState PersistentState
+	if err := d.Decode(&pState); err != nil {
 		log.Fatal(err)
 	}
+	rf.state.pState = &pState
 }
 
 // CondInstallSnapshot A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -314,7 +316,6 @@ func (rf *Raft) handleStart(cmd *startReq) {
 	}
 	version := rf.state.version
 	index := rf.state.logLen() + 1
-	repCh <- &startRes{index: index, term: term, isLeader: true}
 	//rf.startReplyCh[termLog{Term: term, Index: index}] = repCh
 	entry := &LogEntry{
 		Term:  rf.state.getTerm(),
@@ -322,7 +323,10 @@ func (rf *Raft) handleStart(cmd *startReq) {
 		Cmd:   cmd.cmd,
 	}
 	entry.Count = entry.Count.add(rf.me)
+	log.Printf("append log, cmd is %v term is %d and index is %d", cmd.cmd, rf.state.getTerm(), index)
 	rf.state.logAppend(entry)
+	rf.persistIfVersionMismatch(version)
+	repCh <- &startRes{index: index, term: term, isLeader: true}
 	rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
 	replys := make([]*AppendEntriesReply, len(rf.peers))
 	for i := 0; i < len(rf.peers); i++ {
@@ -335,7 +339,6 @@ func (rf *Raft) handleStart(cmd *startReq) {
 			rf.sendAppendEntries(server, arg, replys[server], nil, "start")
 		}(i, arg)
 	}
-	rf.persistIfVersionMismatch(version)
 }
 
 // Start the service using Raft (e.g. a k/v server) wants to start

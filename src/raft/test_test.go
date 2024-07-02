@@ -607,6 +607,7 @@ func TestPersist12C(t *testing.T) {
 		cfg.disconnect(i)
 		cfg.connect(i)
 	}
+	log.Println("------------------------------")
 
 	cfg.one(12, servers, true)
 

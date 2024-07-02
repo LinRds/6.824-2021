@@ -137,10 +137,8 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 		for i := re.prevLogIndex + 1; i <= re.prevLogIndex+re.elemLength; i++ {
 			entry := rf.state.getLogEntry(i - 1)
 			entry.Count = entry.Count.add(re.server)
-			if rf.isMajority(entry.Count.len()) {
-				if rf.state.setCommitIndex(i) {
-					rf.updateLogState()
-				}
+			if rf.isMajority(entry.Count.len()) && rf.state.setCommitIndex(i) {
+				rf.updateLogState()
 			}
 		}
 		rf.state.setNextIndex(server, re.prevLogIndex+re.elemLength+1, true)
