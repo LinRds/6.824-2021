@@ -7,6 +7,10 @@ import (
 	"sync/atomic"
 )
 
+const (
+	minimumIndex = 1
+)
+
 type termLog struct {
 	Term  int
 	Index int
@@ -113,11 +117,72 @@ func versionNotMatch(v1, v2 int) string {
 	return fmt.Sprintf("version not match, expected %d, got %d", v1, v2)
 }
 
-func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
+func handleSuccess(rf *Raft, reply *appendEntryResult) {
+	//log.Printf("term: %d, leader is %d and follower is %d,  success append entry", myTerm, rf.me, server)
+	server := reply.server
+	for i := reply.prevLogIndex + 1; i <= reply.prevLogIndex+reply.elemLength; i++ {
+		entry := rf.state.getLogEntry(i - 1)
+		entry.Count = entry.Count.add(reply.server)
+		if rf.isMajority(entry.Count.len()) && entry.Term == rf.state.getTerm() && rf.state.setCommitIndex(i) {
+			rf.updateLogState()
+		}
+	}
+	rf.state.setNextIndex(server, reply.prevLogIndex+reply.elemLength+1, true)
+	rf.state.setMatchIndex(server, max(rf.state.getMatchIndex(server), reply.prevLogIndex+reply.elemLength))
+}
+
+func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult) {
+	fastTerm, fastIndex := re.reply.FastTerm, re.reply.FastIndex
+	if fastIndex < 0 {
+		log.Fatalf("fastIndex is %d of server %d is negative", fastIndex, re.server)
+	}
+
 	server := re.server
-	// 这里可能存在一种不应该返回的情况，就是version的改变是由logAppend引起的，而非term或者vote
-	// 但是这种情况下后续的心跳或者新的appendEntriesReq仍然可以达到日志同步的目的，所以这里返回
-	// 也不为错.
+	// fastIndex = 0 when fastTerm = -1
+	if fastTerm == rf.state.getTerm() || fastTerm == -1 {
+		rf.state.setNextIndex(server, fastIndex+1, false)
+		return
+	}
+
+	// fastTerm < myTerm
+	// clip to avoid fail in TestRejoin2B, as disconnected leader may try to agree on some entries
+	// it's un committed log in some term is bigger than leader
+	fastIndex = min(fastIndex, rf.state.vState.lastIndexInTerm(fastTerm))
+	// leader may not have log in fastTerm
+	if fastIndex < 0 {
+		fastTerm, fastIndex = rf.state.vState.fastIndex(fastTerm)
+		// leader not have any log in term less than fastTerm
+		if fastTerm == -1 {
+			log.Printf("follower %d has log of term %d which leader not have", re.server, re.reply.FastTerm)
+			fastIndex = minimumIndex - 1 // set index 1 less than minimum value
+		}
+	}
+	if fastIndex > 0 {
+		// safety validation
+		entry := rf.state.getLogEntry(fastIndex - 1)
+		if entry.Term != fastTerm {
+			log.Fatalf("expected fast term to be %d, got %d", fastTerm, entry.Term)
+		}
+	}
+	rf.state.setNextIndex(server, fastIndex+1, false)
+}
+
+func handleFailure(rf *Raft, reply *appendEntryResult) {
+	term, _ := reply.reply.Get()
+	myTerm := rf.state.getTerm()
+	if int(term) > myTerm {
+		rf.state.setTerm(int(term))
+		rf.id.setState(rf, follower)
+		return
+	}
+	setNextIndexWhenFailure(rf, reply)
+}
+
+func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
+	// There might be a case where returning is not necessary,
+	// which is when the version change is caused by logAppend rather than term or vote.
+	// However, in this case, subsequent heartbeats or new appendEntriesReq can still achieve log synchronization,
+	// so returning here is not wrong.
 	if !rf.state.match(re.stateVersion) {
 		log.Printf(versionNotMatch(rf.state.version, re.stateVersion))
 		return
@@ -133,57 +198,12 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 		return
 	}
 	if success {
-		//log.Printf("term: %d, leader is %d and follower is %d,  success append entry", myTerm, rf.me, server)
-		for i := re.prevLogIndex + 1; i <= re.prevLogIndex+re.elemLength; i++ {
-			entry := rf.state.getLogEntry(i - 1)
-			entry.Count = entry.Count.add(re.server)
-			if rf.isMajority(entry.Count.len()) && rf.state.setCommitIndex(i) {
-				rf.updateLogState()
-			}
-		}
-		rf.state.setNextIndex(server, re.prevLogIndex+re.elemLength+1, true)
-		rf.state.setMatchIndex(server, max(rf.state.getMatchIndex(server), re.prevLogIndex+re.elemLength))
+		handleSuccess(rf, re)
 	} else {
-		if int(term) > myTerm {
-			rf.state.setTerm(int(term))
-			rf.id.setState(rf, follower)
-		} else {
-			fastTerm, fastIndex := re.reply.FastTerm, re.reply.FastIndex
-			if fastTerm == -1 {
-				log.Printf("set nextindex to %d of server %d in term %d\n", re.prevLogIndex, re.server, term)
-				rf.state.setNextIndex(server, 1, false)
-			} else if fastTerm == myTerm {
-				rf.state.setNextIndex(server, fastIndex+1, false)
-			} else {
-				// fastTerm < myTerm
-				// clip to avoid fail in TestRejoin2B, as disconnected leader may try to agree on some entries
-				// it's un committed log in some term is bigger than leader
-				if fastIndex < 0 {
-					log.Fatalf("fastIndex is %d of server %d is negative", fastIndex, re.server)
-				}
-				fastIndex = min(fastIndex, rf.state.vState.lastIndexInTerm(fastTerm))
-				// leader may not have log in fastTerm
-				if fastIndex < 0 {
-					fastTerm, fastIndex = rf.state.vState.fastIndex(fastTerm)
-					// leader not have any log in term less than fastTerm
-					if fastTerm == -1 {
-						log.Printf("follower %d has log of term %d which leader not have", re.server, re.reply.FastTerm)
-						fastIndex = 0 // set index 1 less than minimum value
-					}
-				}
-				if fastIndex > 0 {
-					// safety validation
-					entry := rf.state.getLogEntry(fastIndex - 1)
-					if entry.Term != fastTerm {
-						log.Fatalf("expected fast term to be %d, got %d", fastTerm, entry.Term)
-					}
-				}
-				rf.state.setNextIndex(server, fastIndex+1, false)
-			}
-
-			arg := rf.buildAppendArgs(re.server)
-
-			go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")
-		}
+		handleFailure(rf, re)
 	}
+
+	// fast sync
+	arg := rf.buildAppendArgs(re.server)
+	go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")
 }
