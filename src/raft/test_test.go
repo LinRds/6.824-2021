@@ -653,7 +653,7 @@ func TestPersist22C(t *testing.T) {
 
 		cfg.disconnect((leader1 + 1) % servers)
 		cfg.disconnect((leader1 + 2) % servers)
-
+		log.Println("-----------------------------------------")
 		cfg.one(10+index, servers-2, true)
 		index++
 
@@ -671,6 +671,7 @@ func TestPersist22C(t *testing.T) {
 		cfg.start1((leader1+3)%servers, cfg.applier)
 		cfg.connect((leader1 + 3) % servers)
 
+		log.Println("-----------------------------------------")
 		cfg.one(10+index, servers-2, true)
 		index++
 
@@ -678,6 +679,7 @@ func TestPersist22C(t *testing.T) {
 		cfg.connect((leader1 + 0) % servers)
 	}
 
+	log.Println("-----------------------------------------")
 	cfg.one(1000, servers, true)
 
 	cfg.end()
@@ -732,6 +734,7 @@ func TestFigure82C(t *testing.T) {
 
 	nup := servers
 	for iters := 0; iters < 1000; iters++ {
+		log.Printf("--------------------->iter %d<------------------------", iters)
 		leader := -1
 		for i := 0; i < servers; i++ {
 			if cfg.rafts[i] != nil {

@@ -157,10 +157,26 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 			} else {
 				// fastTerm < myTerm
 				// clip to avoid fail in TestRejoin2B, as disconnected leader may try to agree on some entries
+				// it's un committed log in some term is bigger than leader
+				if fastIndex < 0 {
+					log.Fatalf("fastIndex is %d of server %d is negative", fastIndex, re.server)
+				}
 				fastIndex = min(fastIndex, rf.state.vState.lastIndexInTerm(fastTerm))
-				entry := rf.state.getLogEntry(fastIndex - 1)
-				if entry.Term != fastTerm {
-					log.Fatalf("expected fast term to be %d, got %d", fastTerm, entry.Term)
+				// leader may not have log in fastTerm
+				if fastIndex < 0 {
+					fastTerm, fastIndex = rf.state.vState.fastIndex(fastTerm)
+					// leader not have any log in term less than fastTerm
+					if fastTerm == -1 {
+						log.Printf("follower %d has log of term %d which leader not have", re.server, re.reply.FastTerm)
+						fastIndex = 0 // set index 1 less than minimum value
+					}
+				}
+				if fastIndex > 0 {
+					// safety validation
+					entry := rf.state.getLogEntry(fastIndex - 1)
+					if entry.Term != fastTerm {
+						log.Fatalf("expected fast term to be %d, got %d", fastTerm, entry.Term)
+					}
 				}
 				rf.state.setNextIndex(server, fastIndex+1, false)
 			}
