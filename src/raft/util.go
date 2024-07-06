@@ -13,5 +13,5 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 }
 
 func versionIncLog(reason string) {
-	log.Printf("version inc for %s", reason)
+	//log.Printf("version inc for %s", reason)
 }

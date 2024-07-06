@@ -79,11 +79,12 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	lt, li := rf.state.lastLogEntry()
 	// safety
 	if lt > args.LastLogTerm || (lt == args.LastLogTerm && li > args.LastLogIndex) {
-		rf.state.setTerm(args.Term)
 		return RpcRefuse(rf.state.getTerm())
 	}
+	if term < args.Term {
+		rf.state.setTerm(args.Term)
+	}
 	rf.setVote(&Vote{Voted: true, VotedFor: args.CandidateId})
-	rf.state.setTerm(args.Term)
 	rf.lastHeartbeatFromLeader = time.Now()
 	return RpcAccept(rf.state.getTerm())
 }
@@ -100,7 +101,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	}
 
 	if args.PrevLogIndex != 0 {
-		if args.PrevLogIndex > len(rf.state.pState.Logs) {
+		if args.PrevLogIndex > rf.state.logLen() {
 			log.Println("server", rf.me, "append fail for not have prev log index")
 			return rf.refuseAppendEntries(term)
 		}

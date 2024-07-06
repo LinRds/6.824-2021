@@ -266,7 +266,7 @@ func (rf *Raft) persist() {
 	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
-	log.Printf("server %d success persist, data len is %d", rf.me, len(data))
+	//log.Printf("server %d success persist, data len is %d", rf.me, len(data))
 }
 
 // restore previously persisted state.

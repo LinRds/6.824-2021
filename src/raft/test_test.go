@@ -970,7 +970,7 @@ func internalChurn(t *testing.T, unreliable bool) {
 	}
 
 	atomic.StoreInt32(&stop, 1)
-
+	log.Println("--------------------------------------------")
 	values := []int{}
 	for i := 0; i < ncli; i++ {
 		vv := <-cha[i]

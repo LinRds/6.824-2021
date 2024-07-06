@@ -168,13 +168,6 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult) {
 }
 
 func handleFailure(rf *Raft, reply *appendEntryResult) {
-	term, _ := reply.reply.Get()
-	myTerm := rf.state.getTerm()
-	if int(term) > myTerm {
-		rf.state.setTerm(int(term))
-		rf.id.setState(rf, follower)
-		return
-	}
 	setNextIndexWhenFailure(rf, reply)
 }
 
@@ -183,14 +176,19 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 	// which is when the version change is caused by logAppend rather than term or vote.
 	// However, in this case, subsequent heartbeats or new appendEntriesReq can still achieve log synchronization,
 	// so returning here is not wrong.
-	if !rf.state.match(re.stateVersion) {
-		log.Printf(versionNotMatch(rf.state.version, re.stateVersion))
-		return
-	}
+	//if !rf.state.match(re.stateVersion) {
+	//	log.Printf(versionNotMatch(rf.state.version, re.stateVersion))
+	//	return
+	//}
 	myTerm := rf.state.getTerm()
 	term, success := re.reply.Get()
 	if term == 0 {
 		log.Println("term is 0")
+		return
+	}
+	if int(term) > myTerm {
+		rf.state.setTerm(int(term))
+		rf.id.setState(rf, follower)
 		return
 	}
 	if success && int(term) != myTerm {
