@@ -9,7 +9,7 @@ package main
 // Please do not change this file.
 //
 
-import "6.824/mr"
+import "github.com/LinRds/raft/mr"
 import "time"
 import "os"
 import "fmt"

@@ -4,7 +4,7 @@ package main
 // see comments in lockd.go
 //
 
-import "6.824/lockservice"
+import "github.com/LinRds/raft/lockservice"
 import "os"
 import "fmt"
 

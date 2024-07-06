@@ -1,7 +1,8 @@
 package raft
 
 import (
-	"log"
+	"fmt"
+	"github.com/sirupsen/logrus"
 	"time"
 )
 
@@ -22,7 +23,9 @@ type Leader struct {
 }
 
 func (l *Leader) takingOffice(rf *Raft) {
-	log.Printf("server %d become leader", rf.me)
+	logrus.WithFields(logrus.Fields{
+		"server": rf.me,
+	}).Info("become leader")
 
 	rf.state.vState.init(len(rf.peers), rf.state.logLen()+1)
 }
@@ -46,7 +49,7 @@ func (l *Leader) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEn
 
 func (l *Leader) setState(rf *Raft, id int) {
 	if id != follower {
-		log.Fatal("leader only can trans to follower")
+		logrus.Fatal("leader only can trans to follower")
 	}
 	l.leavingOffice()
 	rf.id = rf.getId(follower)
@@ -70,8 +73,22 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	term := rf.state.getTerm()
 	version := rf.state.version
 	defer rf.persistIfVersionMismatch(version)
-	if term > args.Term || (term == args.Term && rf.state.isVoted()) {
-		log.Printf("server %d refuse server %d for term and voted. my term is %d, other term is %d, my voted is %v", rf.me, args.CandidateId, term, args.Term, rf.state.isVoted())
+	if term > args.Term {
+		logrus.WithFields(logrus.Fields{
+			"me":        rf.me,
+			"candidate": args.CandidateId,
+			"myTerm":    rf.state.getTerm(),
+			"otherTerm": args.Term,
+		}).Warn("refuse vote")
+		return RpcRefuse(rf.state.getTerm()) // reply new term for receiver to validate whether it is a reply for old term
+	}
+	if term == args.Term && rf.state.isVoted() {
+		logrus.WithFields(logrus.Fields{
+			"me":        rf.me,
+			"candidate": args.CandidateId,
+			"voted":     rf.state.pState.Vote.Voted,
+			"votedFor":  rf.state.pState.Vote.VotedFor,
+		}).Warn("refuse vote")
 		return RpcRefuse(rf.state.getTerm()) // reply new term for receiver to validate whether it is a reply for old term
 	}
 	if term < args.Term {
@@ -90,8 +107,15 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
 	term := rf.state.getTerm()
 	version := rf.state.version
+	log := logrus.WithFields(logrus.Fields{
+		"server":    rf.me,
+		"oldTerm":   term,
+		"prevIndex": args.PrevLogIndex,
+		"prevTerm":  args.PrevLogTerm,
+	})
 	if args.Term < term {
-		return rf.refuseAppendEntries(term)
+		log = log.WithField("reason", "term too low")
+		return rf.refuseAppendEntries(log, args.PrevLogTerm)
 	}
 	if term < args.Term {
 		rf.state.setTerm(args.Term)
@@ -100,15 +124,15 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 
 	if args.PrevLogIndex != 0 {
 		if args.PrevLogIndex > rf.state.logLen() {
-			log.Println("server", rf.me, "append fail for not have prev log index")
-			return rf.refuseAppendEntries(term)
+			log = log.WithField("reason", "log too short")
+			return rf.refuseAppendEntries(log, args.PrevLogTerm)
 		}
 		// reply false if log doesn't contain an entry at prevLogIndex
 		// whose term matches prevLogTerm
 		prevItem := rf.state.pState.Logs[args.PrevLogIndex-1]
 		if prevItem == nil || prevItem.Term != args.PrevLogTerm {
-			log.Printf("append fail for server %d: prev log not match\n", rf.me)
-			return rf.refuseAppendEntries(term)
+			log = log.WithField("reason", fmt.Sprintf("log not match, expected %d got %d", prevItem.Term, args.PrevLogTerm))
+			return rf.refuseAppendEntries(log, args.PrevLogTerm)
 		}
 	}
 	for _, entry := range rf.state.pState.Logs[args.PrevLogIndex:] {
@@ -118,6 +142,10 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	// append any new entries not already in the log
 	rf.state.pState.Logs = rf.state.pState.Logs[:args.PrevLogIndex]
 	rf.state.logAppend(args.Entries...)
+	log = log.WithFields(logrus.Fields{
+		"appendFrom": args.PrevLogIndex + 1,
+		"appendTo":   rf.state.logLen() + 1,
+	})
 	for _, entry := range args.Entries {
 		if entry.Index > rf.state.vState.lastIndexEachTerm[entry.Term] {
 			rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
@@ -127,14 +155,18 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine
 	if rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs))) {
+		log = log.WithFields(logrus.Fields{
+			"updateFrom": rf.state.vState.lastApplied + 1,
+			"updateTo":   rf.state.vState.commitIndex,
+		})
 		rf.updateLogState()
 	}
-	return rf.acceptAppendEntries(term)
+	return rf.acceptAppendEntries(log, term)
 }
 
 func (f *Follower) setState(rf *Raft, id int) {
 	if id == leader {
-		log.Fatal("follower can not trans to leader directly")
+		logrus.Fatal("follower can not trans to leader directly")
 	}
 	if id == candidate {
 		rf.state.incTerm()

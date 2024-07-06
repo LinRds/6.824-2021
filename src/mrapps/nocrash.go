@@ -6,7 +6,7 @@ package main
 // go build -buildmode=plugin nocrash.go
 //
 
-import "6.824/mr"
+import "github.com/LinRds/raft/mr"
 import crand "crypto/rand"
 import "math/big"
 import "strings"

@@ -1,7 +1,7 @@
 package shardkv
 
-import "6.824/shardctrler"
-import "6.824/labrpc"
+import "github.com/LinRds/raft/shardctrler"
+import "github.com/LinRds/raft/labrpc"
 import "testing"
 import "os"
 
@@ -12,7 +12,7 @@ import "math/rand"
 import "encoding/base64"
 import "sync"
 import "runtime"
-import "6.824/raft"
+import "github.com/LinRds/raft/raft"
 import "strconv"
 import "fmt"
 import "time"

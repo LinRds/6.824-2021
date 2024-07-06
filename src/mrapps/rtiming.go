@@ -7,7 +7,7 @@ package main
 // go build -buildmode=plugin rtiming.go
 //
 
-import "6.824/mr"
+import "github.com/LinRds/raft/mr"
 import "fmt"
 import "os"
 import "syscall"

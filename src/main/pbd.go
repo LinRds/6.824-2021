@@ -5,7 +5,7 @@ package main
 //
 
 import "time"
-import "6.824/pbservice"
+import "github.com/LinRds/raft/pbservice"
 import "os"
 import "fmt"
 

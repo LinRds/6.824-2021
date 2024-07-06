@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"log"
+	"github.com/sirupsen/logrus"
 	"sync/atomic"
 )
 
@@ -76,7 +76,10 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply, result chan *RequestVoteReply) bool {
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply, "")
 	if !ok {
-		log.Printf("%d->%d:rpc error", rf.me, server)
+		logrus.WithFields(logrus.Fields{
+			"from": rf.me,
+			"to":   server,
+		}).Info("rpc error")
 	}
 	if result != nil {
 		result <- reply
@@ -102,7 +105,8 @@ func (rf *Raft) electionOnce(term int) {
 		4. 获得了任期大于自己的回复退回follower
 		5. 超时没有完成选举任期加1，进入下一轮
 	*/
-	log.Printf("server %d start election for term %d", rf.me, term)
+	log := logrus.WithField("server", rf.me)
+	log.WithField("term", term).Info("start election")
 	lt, li := rf.state.lastLogEntry()
 	args := &RequestVoteArgs{
 		Term:         term,

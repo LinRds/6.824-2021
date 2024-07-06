@@ -18,8 +18,10 @@ package raft
 //
 
 import (
-	"6.824/labgob"
 	"bytes"
+	"github.com/LinRds/raft/labgob"
+	nested "github.com/antonfisher/nested-logrus-formatter"
+	"github.com/sirupsen/logrus"
 	"log"
 	"math/rand"
 	//	"bytes"
@@ -27,9 +29,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	//	"6.824/labgob"
-	"6.824/labrpc"
+	//	"github.com/LinRds/raft/labgob"
+	"github.com/LinRds/raft/labrpc"
 )
+
+func init() {
+	logrus.SetFormatter(&nested.Formatter{
+		TimestampFormat: time.RFC3339,
+		FieldsOrder:     []string{"server", "term", "prevTerm", "prevIndex", "fastTerm", "fastIndex", "appendFrom", "appendTo", "updateFrom", "updateTo"},
+	})
+}
 
 const (
 	ElectionTimeout  = 700
@@ -154,8 +163,7 @@ func (rf *Raft) updateLogState() {
 		if rf.state.pState.Logs[i] == nil {
 			log.Fatalf("raft [%d] log state is nil", rf.me)
 		}
-		//log.Printf("server %d sync apply, cmd is %v, index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Index)
-		log.Printf("server %d sync log, cmd is %v, term is %d and index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Term, rf.state.pState.Logs[i].Index)
+		//log.Printf("server %d sync log, cmd is %v, term is %d and index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Term, rf.state.pState.Logs[i].Index)
 		syncApply(rf.applyCh, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Index)
 	}
 	rf.state.vState.lastApplied = rf.state.vState.commitIndex
@@ -191,7 +199,7 @@ func (rf *Raft) buildAppendArgs(server int) *appendEntriesArg {
 	if prevIndex == 0 {
 		prevTerm = 0
 	} else {
-		prevTerm = rf.state.pState.Logs[prevIndex-1].Term
+		prevTerm = rf.state.getLogEntry(prevIndex - 1).Term
 	}
 	arg := &AppendEntriesArgs{
 		Term:         rf.state.pState.CurrentTerm,
@@ -308,6 +316,7 @@ func (rf *Raft) isMajority(num int) bool {
 }
 
 func (rf *Raft) handleStart(cmd *startReq) {
+	log := logrus.WithField("server", rf.me)
 	term := rf.state.getTerm()
 	repCh := cmd.reply
 	if !rf.isLeader() {
@@ -323,7 +332,11 @@ func (rf *Raft) handleStart(cmd *startReq) {
 		Cmd:   cmd.cmd,
 	}
 	entry.Count = entry.Count.add(rf.me)
-	log.Printf("append log, cmd is %v term is %d and index is %d", cmd.cmd, rf.state.getTerm(), index)
+	log.WithFields(logrus.Fields{
+		"term":  rf.state.getTerm(),
+		"index": index,
+		"cmd":   cmd.cmd,
+	}).Info("leader append log in Start")
 	rf.state.logAppend(entry)
 	rf.persistIfVersionMismatch(version)
 	repCh <- &startRes{index: index, term: term, isLeader: true}
@@ -446,7 +459,7 @@ func (rf *Raft) ticker() {
 		case appendReq := <-rf.appendEntriesReqCh:
 			term := rf.state.getTerm()
 			if term > appendReq.Term {
-				rf.appendEntriesRepCh <- rf.refuseAppendEntries(term)
+				rf.appendEntriesRepCh <- rf.refuseAppendEntries(logrus.WithField("reason", "term too low"), appendReq.PrevLogTerm)
 				continue
 			}
 			rf.lastHeartbeatFromLeader = time.Now()
