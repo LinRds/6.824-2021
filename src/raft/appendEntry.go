@@ -41,6 +41,7 @@ type AppendEntriesArgs struct {
 
 	Entries      []*LogEntry
 	LeaderCommit int
+	From         string // track
 }
 
 type AppendEntriesReply struct {
@@ -76,7 +77,7 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 
 func (rf *Raft) refuseAppendEntries(log *logrus.Entry, term int) *AppendEntriesReply {
 	reply := new(AppendEntriesReply)
-	reply.TermAndSuccess = RpcRefuse(term)
+	reply.TermAndSuccess = RpcRefuse(rf.state.getTerm())
 	reply.FastTerm, reply.FastIndex = rf.state.vState.fastIndex(term)
 	log.WithFields(logrus.Fields{
 		"fastTerm":  reply.FastTerm,
@@ -123,9 +124,15 @@ func versionNotMatch(v1, v2 int) string {
 	return fmt.Sprintf("version not match, expected %d, got %d", v1, v2)
 }
 
-func handleSuccess(rf *Raft, reply *appendEntryResult) {
-	//log.Printf("term: %d, leader is %d and follower is %d,  success append entry", myTerm, rf.me, server)
+func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 	server := reply.server
+	log = log.WithFields(logrus.Fields{
+		"server":    rf.me,
+		"client":    server,
+		"fastIndex": reply.reply.FastIndex,
+		"fastTerm":  reply.reply.FastTerm,
+		"old":       rf.state.getNextIndex(server),
+	})
 	for i := reply.prevLogIndex + 1; i <= reply.prevLogIndex+reply.elemLength; i++ {
 		entry := rf.state.getLogEntry(i - 1)
 		entry.Count = entry.Count.add(reply.server)
@@ -133,6 +140,7 @@ func handleSuccess(rf *Raft, reply *appendEntryResult) {
 			rf.updateLogState()
 		}
 	}
+	log.WithField("new", reply.prevLogIndex+reply.elemLength+1).Info("set next index when success")
 	rf.state.setNextIndex(server, reply.prevLogIndex+reply.elemLength+1, true)
 	rf.state.setMatchIndex(server, max(rf.state.getMatchIndex(server), reply.prevLogIndex+reply.elemLength))
 }
@@ -144,9 +152,16 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 	}
 
 	server := re.server
+	log = log.WithFields(logrus.Fields{
+		"server":    rf.me,
+		"client":    server,
+		"fastIndex": re.reply.FastIndex,
+		"fastTerm":  re.reply.FastTerm,
+		"old":       rf.state.getNextIndex(server),
+	})
 	// fastIndex = 0 when fastTerm = -1
 	if fastTerm == rf.state.getTerm() || fastTerm == -1 {
-		log.Infof("set server %d next index to %d", server, fastIndex+1)
+		log.WithField("new", fastIndex+1).Warn("set next index when failure")
 		rf.state.setNextIndex(server, fastIndex+1, false)
 		return
 	}
@@ -175,6 +190,7 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 		}
 	}
 	log.Infof("set server %d next index to %d", server, fastIndex+1)
+	log.WithField("new", fastIndex+1).Warn("set next index when failure")
 	rf.state.setNextIndex(server, fastIndex+1, false)
 }
 
@@ -208,13 +224,13 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 		return
 	}
 	if success {
-		handleSuccess(rf, re)
+		handleSuccess(rf, re, log)
 	} else {
 		handleFailure(rf, re, log)
 	}
 
 	// fast sync
 	// TODO avoid requests not necessary
-	arg := rf.buildAppendArgs(re.server)
+	arg := rf.buildAppendArgs(re.server, "fast sync")
 	go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")
 }
