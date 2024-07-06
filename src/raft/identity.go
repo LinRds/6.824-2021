@@ -112,6 +112,8 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 		"oldTerm":   term,
 		"prevIndex": args.PrevLogIndex,
 		"prevTerm":  args.PrevLogTerm,
+		"from":      args.From,
+		"client":    args.LeaderId,
 	})
 	if args.Term < term {
 		log = log.WithField("reason", "term too low")

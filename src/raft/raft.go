@@ -35,8 +35,7 @@ import (
 
 func init() {
 	logrus.SetFormatter(&nested.Formatter{
-		TimestampFormat: time.RFC3339,
-		FieldsOrder:     []string{"server", "term", "prevTerm", "prevIndex", "fastTerm", "fastIndex", "appendFrom", "appendTo", "updateFrom", "updateTo"},
+		FieldsOrder: []string{"server", "me", "client", "candidate", "term", "prevTerm", "prevIndex", "fastTerm", "fastIndex", "appendFrom", "appendTo", "updateFrom", "updateTo"},
 	})
 }
 
@@ -172,9 +171,10 @@ func (rf *Raft) updateLogState() {
 type appendEntriesArg struct {
 	arg     *AppendEntriesArgs
 	version int
+	from    string
 }
 
-func (rf *Raft) buildAppendArgs(server int) *appendEntriesArg {
+func (rf *Raft) buildAppendArgs(server int, from string) *appendEntriesArg {
 	if server == rf.me {
 		return nil
 	}
@@ -208,8 +208,9 @@ func (rf *Raft) buildAppendArgs(server int) *appendEntriesArg {
 		PrevLogTerm:  prevTerm,
 		Entries:      entries,
 		LeaderCommit: rf.state.vState.commitIndex,
+		From:         from,
 	}
-	return &appendEntriesArg{arg: arg, version: rf.state.version}
+	return &appendEntriesArg{arg: arg, version: rf.state.version, from: from}
 }
 
 // LogControllerLoop deprecated
@@ -219,7 +220,7 @@ func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
 		case <-stopCh:
 			return
 		default:
-			arg := rf.buildAppendArgs(i)
+			arg := rf.buildAppendArgs(i, "log control loop")
 			// TODO 等到能够确定matchIndex的更新机制后，尝试减少不必要的
 			reply := &AppendEntriesReply{}
 			rf.sendAppendEntries(i, arg, reply, nil, "logController loop")
@@ -347,7 +348,7 @@ func (rf *Raft) handleStart(cmd *startReq) {
 			continue
 		}
 		replys[i] = &AppendEntriesReply{}
-		arg := rf.buildAppendArgs(i)
+		arg := rf.buildAppendArgs(i, "start")
 		go func(server int, arg *appendEntriesArg) {
 			rf.sendAppendEntries(server, arg, replys[server], nil, "start")
 		}(i, arg)
@@ -409,7 +410,7 @@ func (rf *Raft) heartbeat() {
 		if i == rf.me {
 			continue
 		}
-		arg := rf.buildAppendArgs(i)
+		arg := rf.buildAppendArgs(i, "heartbeat")
 		go func() {
 			reply := &AppendEntriesReply{}
 			rf.sendAppendEntries(i, arg, reply, nil, "heartbeat")
@@ -459,7 +460,12 @@ func (rf *Raft) ticker() {
 		case appendReq := <-rf.appendEntriesReqCh:
 			term := rf.state.getTerm()
 			if term > appendReq.Term {
-				rf.appendEntriesRepCh <- rf.refuseAppendEntries(logrus.WithField("reason", "term too low"), appendReq.PrevLogTerm)
+				log := logrus.WithFields(logrus.Fields{
+					"server": rf.me,
+					"client": appendReq.LeaderId,
+					"from":   appendReq.From,
+				})
+				rf.appendEntriesRepCh <- rf.refuseAppendEntries(log.WithField("reason", "term too low"), appendReq.PrevLogTerm)
 				continue
 			}
 			rf.lastHeartbeatFromLeader = time.Now()

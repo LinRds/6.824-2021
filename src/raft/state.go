@@ -1,6 +1,8 @@
 package raft
 
-import "log"
+import (
+	"github.com/sirupsen/logrus"
+)
 
 // PersistentState Updated on stable storage before responding to RPC
 type PersistentState struct {
@@ -142,7 +144,7 @@ func (s *State) incTerm() {
 }
 func (s *State) setTerm(term int) {
 	if s.pState.CurrentTerm > term {
-		log.Println("new term is less than current in setTerm")
+		logrus.Println("new term is less than current in setTerm")
 		return
 	}
 	versionIncLog("set term")
@@ -163,6 +165,9 @@ func (s *State) setNextIndex(server, index int, inc bool) {
 	s.vState.setNextIndex(server, index, inc)
 }
 
+func (s *State) getNextIndex(server int) int {
+	return s.vState.nextIndex[server]
+}
 func (s *State) setMatchIndex(server, index int) {
 	s.vState.setMatchIndex(server, index)
 }
