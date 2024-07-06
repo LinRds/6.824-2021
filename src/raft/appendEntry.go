@@ -189,7 +189,6 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 			log.Fatalf("expected fast term to be %d, got %d", fastTerm, entry.Term)
 		}
 	}
-	log.Infof("set server %d next index to %d", server, fastIndex+1)
 	log.WithField("new", fastIndex+1).Warn("set next index when failure")
 	rf.state.setNextIndex(server, fastIndex+1, false)
 }

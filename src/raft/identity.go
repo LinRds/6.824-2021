@@ -146,7 +146,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	rf.state.logAppend(args.Entries...)
 	log = log.WithFields(logrus.Fields{
 		"appendFrom": args.PrevLogIndex + 1,
-		"appendTo":   rf.state.logLen() + 1,
+		"appendTo":   rf.state.logLen(),
 	})
 	for _, entry := range args.Entries {
 		if entry.Index > rf.state.vState.lastIndexEachTerm[entry.Term] {
@@ -157,10 +157,6 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine
 	if rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs))) {
-		log = log.WithFields(logrus.Fields{
-			"updateFrom": rf.state.vState.lastApplied + 1,
-			"updateTo":   rf.state.vState.commitIndex,
-		})
 		rf.updateLogState()
 	}
 	return rf.acceptAppendEntries(log, term)

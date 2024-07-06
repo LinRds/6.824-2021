@@ -35,7 +35,7 @@ import (
 
 func init() {
 	logrus.SetFormatter(&nested.Formatter{
-		FieldsOrder: []string{"server", "me", "client", "candidate", "term", "prevTerm", "prevIndex", "fastTerm", "fastIndex", "appendFrom", "appendTo", "updateFrom", "updateTo"},
+		FieldsOrder: []string{"server", "me", "client", "candidate", "term", "prevTerm", "prevIndex", "fastTerm", "fastIndex", "appendFrom", "appendTo", "updateFrom", "updateTo", "old", "new"},
 	})
 }
 
@@ -155,6 +155,11 @@ func (rf *Raft) isCandidate() bool {
 
 // update commitIndex, lastApplied and sync to applyCh
 func (rf *Raft) updateLogState() {
+	logrus.WithFields(logrus.Fields{
+		"server": rf.me,
+		"from":   rf.state.vState.lastApplied + 1,
+		"to":     rf.state.vState.commitIndex,
+	}).Info("sync apply")
 	for i := rf.state.vState.lastApplied; i < rf.state.vState.commitIndex; i++ {
 		if i > rf.state.vState.lastApplied {
 			// TODO apply log
