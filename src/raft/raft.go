@@ -403,7 +403,9 @@ func (rf *Raft) killed() bool {
 func (rf *Raft) ticker() {
 	var timeOut = rand.Int63n(RandRange) + ElectionTimeout
 	electionTimeoutTicker := time.NewTicker(time.Duration(timeOut) * time.Millisecond)
+	defer electionTimeoutTicker.Stop()
 	heartbeatTicker := time.NewTicker(time.Duration(HeartbeatTimeout) * time.Millisecond)
+	defer heartbeatTicker.Stop()
 	for {
 		select {
 		case cmd := <-rf.startReqCh:
