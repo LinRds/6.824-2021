@@ -109,12 +109,13 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	term := rf.state.getTerm()
 	version := rf.state.version
 	log := logrus.WithFields(logrus.Fields{
-		"server":    rf.me,
-		"oldTerm":   term,
-		"prevIndex": args.PrevLogIndex,
-		"prevTerm":  args.PrevLogTerm,
-		"from":      args.From,
-		"client":    args.LeaderId,
+		"server":       rf.me,
+		"oldTerm":      term,
+		"prevIndex":    args.PrevLogIndex,
+		"prevTerm":     args.PrevLogTerm,
+		"from":         args.From,
+		"leaderCommit": args.LeaderCommit,
+		"client":       args.LeaderId,
 	})
 	if args.Term < term {
 		log = log.WithField("reason", "term too low")
@@ -160,7 +161,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	if rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs))) {
 		rf.updateLogState()
 	}
-	return rf.acceptAppendEntries(log, term)
+	return rf.acceptAppendEntries(log)
 }
 
 func (f *Follower) setState(rf *Raft, id int) {

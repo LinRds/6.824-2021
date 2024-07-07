@@ -9,15 +9,16 @@ const (
 	elapse = true
 )
 
-func recordElapse(begin time.Time, from string) {
+func recordElapse(begin time.Time, from string, server int) {
 	if elapse {
-		logrus.WithField("elapse", time.Since(begin)).Info(from)
+		logrus.WithField("server", server).WithField("elapse", time.Since(begin)).Info(from)
 	}
 }
 func start(rf *Raft, cmd *startReq) {
 	begin := time.Now()
-	//defer recordElapse(begin, "start")
+	defer recordElapse(begin, "start", rf.me)
 	repCh := cmd.reply
+	// double check
 	if !rf.isLeader() {
 		repCh <- &startRes{index: -1, term: -1, isLeader: false, begin: begin, end: time.Now()}
 		return
@@ -55,7 +56,7 @@ func start(rf *Raft, cmd *startReq) {
 }
 
 func election(rf *Raft, timeOut int64) {
-	defer recordElapse(time.Now(), "election")
+	defer recordElapse(time.Now(), "election", rf.me)
 	if rf.isLeader() {
 		return
 	}
@@ -66,7 +67,7 @@ func election(rf *Raft, timeOut int64) {
 }
 
 func handleElection(rf *Raft, res *RequestVoteReply) {
-	defer recordElapse(time.Now(), "handleElection")
+	defer recordElapse(time.Now(), "handleElection", rf.me)
 	if !rf.isCandidate() {
 		return
 	}
@@ -81,11 +82,10 @@ func handleElection(rf *Raft, res *RequestVoteReply) {
 	}
 }
 func heartbeat(rf *Raft) {
-	defer recordElapse(time.Now(), "heartbeat")
 	if !rf.isLeader() {
 		return
 	}
-	// appendEntries RPC also can refresh this time
+	defer recordElapse(time.Now(), "heartbeat", rf.me)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
@@ -99,7 +99,7 @@ func heartbeat(rf *Raft) {
 }
 
 func getState(rf *Raft) {
-	defer recordElapse(time.Now(), "getState")
+	defer recordElapse(time.Now(), "getState", rf.me)
 	rf.getStateCh <- &stateRes{
 		isLeader: rf.isLeader(),
 		term:     rf.state.getTerm(),
@@ -107,12 +107,12 @@ func getState(rf *Raft) {
 }
 
 func replyVote(rf *Raft, req *RequestVoteArgs) {
-	defer recordElapse(time.Now(), "replyVote")
+	defer recordElapse(time.Now(), "replyVote", rf.me)
 	rf.voteRepCh <- rf.id.replyVote(rf, req)
 }
 
 func appendEntry(rf *Raft, req *AppendEntriesArgs) {
-	defer recordElapse(time.Now(), "appendEntry")
+	defer recordElapse(time.Now(), "appendEntry", rf.me)
 	term := rf.state.getTerm()
 	if term > req.Term {
 		log := logrus.WithFields(logrus.Fields{
@@ -128,7 +128,7 @@ func appendEntry(rf *Raft, req *AppendEntriesArgs) {
 }
 
 func handleAppendEntry(rf *Raft, rep *appendEntryResult) {
-	defer recordElapse(time.Now(), "handleAppendEntry")
+	defer recordElapse(time.Now(), "handleAppendEntry", rf.me)
 	if !rf.isLeader() {
 		return
 	}

@@ -198,7 +198,7 @@ type appendEntriesArg struct {
 }
 
 func (rf *Raft) buildAppendArgs(server int, from string) *appendEntriesArg {
-	defer recordElapse(time.Now(), "build append args")
+	defer recordElapse(time.Now(), "build append args", rf.me)
 	if server == rf.me {
 		return nil
 	}
@@ -291,7 +291,7 @@ func (rf *Raft) persistIfVersionMismatch(version int) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
-	defer recordElapse(time.Now(), "persist")
+	defer recordElapse(time.Now(), "persist", rf.me)
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	err := e.Encode(rf.state.pState)
@@ -357,17 +357,18 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	// if not leader, return
 	begin := time.Now()
+	log := logrus.WithField("cmd", command)
 	if !rf.getRaceLeader() {
-		logrus.WithField("wait", time.Now().Sub(begin)).
-			WithField("process", time.Now().Sub(begin)).WithField("isLeader", false).Info("start cost")
+		log.WithField("wait", time.Now().Sub(begin)).
+			WithField("process", time.Now().Sub(begin)).WithField("isLeader", false).Info("start end")
 		return -1, -1, false
 	}
-	logrus.WithField("cmd", command).Info("start begin")
+	log.Info("start begin")
 	reply := make(chan *startRes, 1)
 	rf.startReqCh <- &startReq{reply: reply, cmd: command}
 	rep := <-reply
-	logrus.WithField("wait", rep.begin.Sub(begin)).
-		WithField("process", rep.end.Sub(rep.begin)).WithField("isLeader", rep.isLeader).Info("start cost")
+	log.WithField("wait", rep.begin.Sub(begin)).
+		WithField("process", rep.end.Sub(rep.begin)).WithField("isLeader", rep.isLeader).Info("start end")
 	return rep.index, rep.term, rep.isLeader
 }
 

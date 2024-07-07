@@ -87,10 +87,11 @@ func (rf *Raft) refuseAppendEntries(log *logrus.Entry, term int) *AppendEntriesR
 	return reply
 }
 
-func (rf *Raft) acceptAppendEntries(log *logrus.Entry, term int) *AppendEntriesReply {
+func (rf *Raft) acceptAppendEntries(log *logrus.Entry) *AppendEntriesReply {
 	reply := new(AppendEntriesReply)
-	reply.TermAndSuccess = RpcAccept(term)
-	log.WithField("term", rf.state.getTerm()).Info("append entries success")
+	myTerm := rf.state.getTerm()
+	reply.TermAndSuccess = RpcAccept(myTerm)
+	log.WithField("term", myTerm).Info("append entries success")
 	return reply
 }
 
