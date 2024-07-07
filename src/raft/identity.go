@@ -30,7 +30,8 @@ func (l *Leader) takingOffice(rf *Raft) {
 	rf.state.vState.init(len(rf.peers), rf.state.logLen()+1)
 }
 
-func (l *Leader) leavingOffice() {
+func (l *Leader) leavingOffice(rf *Raft) {
+	rf.saveRaceLeader(false)
 }
 
 func (l *Leader) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
@@ -51,7 +52,7 @@ func (l *Leader) setState(rf *Raft, id int) {
 	if id != follower {
 		logrus.Fatal("leader only can trans to follower")
 	}
-	l.leavingOffice()
+	l.leavingOffice(rf)
 	rf.id = rf.getId(follower)
 }
 
@@ -205,6 +206,7 @@ func (c *Candidate) setState(rf *Raft, id int) {
 	rf.id = rf.getId(id)
 	if id == leader {
 		rf.id.(*Leader).takingOffice(rf)
+		rf.saveRaceLeader(true)
 	}
 	if id == candidate {
 		rf.state.incTerm()

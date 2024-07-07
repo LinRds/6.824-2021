@@ -59,7 +59,7 @@ func init() {
 
 const (
 	ElectionTimeout  = 700
-	HeartbeatTimeout = 500
+	HeartbeatTimeout = 300
 	RandRange        = 500
 )
 
@@ -113,6 +113,7 @@ type Raft struct {
 	fol                     *Follower
 	led                     *Leader
 	cdi                     *Candidate
+	currentLeader           atomic.Bool
 	lastHeartbeatFromLeader time.Time
 	voteHandler             map[atomic.Uint64]func(args *RequestVoteArgs, reply *RequestVoteReply)
 	state                   *State
@@ -126,6 +127,14 @@ type Raft struct {
 	appendEntriesRepCh      chan *AppendEntriesReply
 	appendEntryResCh        chan *appendEntryResult
 	startReqCh              chan *startReq
+}
+
+func (rf *Raft) saveRaceLeader(isLeader bool) {
+	rf.currentLeader.Store(isLeader)
+}
+
+func (rf *Raft) getRaceLeader() bool {
+	return rf.currentLeader.Load()
 }
 
 func (rf *Raft) initChan() {
@@ -394,6 +403,11 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	// if not leader, return
 	begin := time.Now()
+	if !rf.getRaceLeader() {
+		logrus.WithField("wait", time.Now().UnixMilli()-begin.UnixMilli()).
+			WithField("process", time.Now().Sub(begin)).WithField("isLeader", false).Info("start cost")
+		return -1, -1, false
+	}
 	reply := make(chan *startRes, 1)
 	rf.startReqCh <- &startReq{reply: reply, cmd: command}
 	rep := <-reply
@@ -458,10 +472,6 @@ func (rf *Raft) ticker() {
 		select {
 		case cmd := <-rf.startReqCh:
 			rf.handleStart(cmd)
-		default:
-
-		}
-		select {
 		case <-electionTimeoutTicker.C:
 			if rf.isLeader() {
 				continue
