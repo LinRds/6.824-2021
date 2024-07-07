@@ -106,24 +106,23 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 }
 
 func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
-	term := rf.state.getTerm()
+	oldTerm := rf.state.getTerm()
 	version := rf.state.version
 	log := logrus.WithFields(logrus.Fields{
 		"server":       rf.me,
-		"oldTerm":      term,
+		"oldTerm":      oldTerm,
 		"prevIndex":    args.PrevLogIndex,
 		"prevTerm":     args.PrevLogTerm,
 		"from":         args.From,
 		"leaderCommit": args.LeaderCommit,
 		"client":       args.LeaderId,
 	})
-	if args.Term < term {
+	if args.Term < oldTerm {
 		log = log.WithField("reason", "term too low")
 		return rf.refuseAppendEntries(log, args.PrevLogTerm)
 	}
-	if term < args.Term {
+	if oldTerm < args.Term {
 		rf.state.setTerm(args.Term)
-		term = args.Term
 	}
 
 	if args.PrevLogIndex != 0 {
@@ -139,6 +138,12 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 			return rf.refuseAppendEntries(log, args.PrevLogTerm)
 		}
 	}
+	// To prevent errors from requests with outdated parameters,
+	// validate them to avoid inadvertent deletion of already append logs.
+	if oldTerm == args.Term && args.PrevLogIndex < rf.state.logLen() {
+		return rf.acceptAppendEntries(log)
+	}
+	// TODO if from == heartbeat && len(log) == 0 return ?
 	for _, entry := range rf.state.pState.Logs[args.PrevLogIndex:] {
 		delete(rf.state.vState.lastIndexEachTerm, entry.Term)
 	}
@@ -146,9 +151,14 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	// append any new entries not already in the log
 	rf.state.pState.Logs = rf.state.pState.Logs[:args.PrevLogIndex]
 	rf.state.logAppend(args.Entries...)
+	from := args.PrevLogIndex + 1
+	to := rf.state.logLen()
+	if from > to {
+		log.Fatal("from bigger than to")
+	}
 	log = log.WithFields(logrus.Fields{
-		"appendFrom": args.PrevLogIndex + 1,
-		"appendTo":   rf.state.logLen(),
+		"appendFrom": from,
+		"appendTo":   to,
 	})
 	for _, entry := range args.Entries {
 		if entry.Index > rf.state.vState.lastIndexEachTerm[entry.Term] {
@@ -158,7 +168,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	rf.persistIfVersionMismatch(version)
 	// if commitIndex > lastApplied: increment lastApplied, apply
 	// log[lastApplied] to state machine
-	if rf.state.setCommitIndex(min(args.LeaderCommit, len(rf.state.pState.Logs))) {
+	if rf.state.setCommitIndex(min(args.LeaderCommit, rf.state.logLen())) {
 		rf.updateLogState()
 	}
 	return rf.acceptAppendEntries(log)
