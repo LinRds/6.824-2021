@@ -213,6 +213,10 @@ func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
 		log.Warn("term is 0")
 		return
 	}
+	if re.prevLogIndex != rf.state.getNextIndex(re.server)-1 {
+		log.Warn("prevLogIndex not match")
+		return
+	}
 	if int(term) > myTerm {
 		rf.state.setTerm(int(term))
 		rf.id.setState(rf, follower)
