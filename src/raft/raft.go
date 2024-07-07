@@ -24,6 +24,8 @@ import (
 	"github.com/sirupsen/logrus"
 	"log"
 	"math/rand"
+	//_ "net/http/pprof"
+	"os"
 	//	"bytes"
 	"sync"
 	"sync/atomic"
@@ -33,15 +35,31 @@ import (
 	"github.com/LinRds/raft/labrpc"
 )
 
+func randName() string {
+	char := "abcdefghijkrmnopqrstuvwxyz"
+	name := make([]byte, 3)
+	for i := 0; i < 3; i++ {
+		name[i] = char[rand.Int()%len(char)]
+	}
+	return string(name)
+}
 func init() {
+	//runtime.SetBlockProfileRate(1)
+	//go http.ListenAndServe("localhost:6060", nil)
 	logrus.SetFormatter(&nested.Formatter{
 		FieldsOrder: []string{"server", "me", "client", "candidate", "term", "prevTerm", "prevIndex", "fastTerm", "fastIndex", "appendFrom", "appendTo", "updateFrom", "updateTo", "old", "new"},
+		NoColors:    true,
 	})
+	file, err := os.OpenFile("test_"+randName()+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	if err != nil {
+		panic(err)
+	}
+	logrus.SetOutput(file)
 }
 
 const (
 	ElectionTimeout  = 700
-	HeartbeatTimeout = 300
+	HeartbeatTimeout = 500
 	RandRange        = 500
 )
 
@@ -96,7 +114,6 @@ type Raft struct {
 	led                     *Leader
 	cdi                     *Candidate
 	lastHeartbeatFromLeader time.Time
-	lastHeartbeat           atomic.Int64
 	voteHandler             map[atomic.Uint64]func(args *RequestVoteArgs, reply *RequestVoteReply)
 	state                   *State
 	applyCh                 chan ApplyMsg
@@ -322,13 +339,14 @@ func (rf *Raft) isMajority(num int) bool {
 }
 
 func (rf *Raft) handleStart(cmd *startReq) {
-	log := logrus.WithField("server", rf.me)
-	term := rf.state.getTerm()
+	begin := time.Now()
 	repCh := cmd.reply
 	if !rf.isLeader() {
-		repCh <- &startRes{index: -1, term: -1, isLeader: false}
+		repCh <- &startRes{index: -1, term: -1, isLeader: false, begin: begin.UnixMilli(), end: time.Now().UnixMilli()}
 		return
 	}
+	log := logrus.WithField("server", rf.me)
+	term := rf.state.getTerm()
 	version := rf.state.version
 	index := rf.state.logLen() + 1
 	//rf.startReplyCh[termLog{Term: term, Index: index}] = repCh
@@ -345,7 +363,7 @@ func (rf *Raft) handleStart(cmd *startReq) {
 	}).Info("leader append log in Start")
 	rf.state.logAppend(entry)
 	rf.persistIfVersionMismatch(version)
-	repCh <- &startRes{index: index, term: term, isLeader: true}
+	repCh <- &startRes{index: index, term: term, isLeader: true, begin: begin.UnixMilli(), end: time.Now().UnixMilli()}
 	rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
 	replys := make([]*AppendEntriesReply, len(rf.peers))
 	for i := 0; i < len(rf.peers); i++ {
@@ -375,9 +393,14 @@ func (rf *Raft) handleStart(cmd *startReq) {
 func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// Your code here (2B).
 	// if not leader, return
+	begin := time.Now()
 	reply := make(chan *startRes, 1)
 	rf.startReqCh <- &startReq{reply: reply, cmd: command}
 	rep := <-reply
+	if rep.isLeader {
+	}
+	logrus.WithField("wait", rep.begin-begin.UnixMilli()).
+		WithField("process", rep.end-rep.begin).WithField("isLeader", rep.isLeader).Info("start cost")
 	return rep.index, rep.term, rep.isLeader
 }
 
@@ -385,6 +408,8 @@ type startRes struct {
 	index    int
 	term     int
 	isLeader bool
+	begin    int64 // start to process
+	end      int64 // end process
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
@@ -430,6 +455,12 @@ func (rf *Raft) ticker() {
 	electionTimeoutTicker := time.NewTicker(time.Duration(timeOut) * time.Millisecond)
 	heartbeatTicker := time.NewTicker(time.Duration(HeartbeatTimeout) * time.Millisecond)
 	for {
+		select {
+		case cmd := <-rf.startReqCh:
+			rf.handleStart(cmd)
+		default:
+
+		}
 		select {
 		case <-electionTimeoutTicker.C:
 			if rf.isLeader() {
@@ -480,8 +511,6 @@ func (rf *Raft) ticker() {
 				continue
 			}
 			rf.handleAppendEntriesReply(appendRes)
-		case cmd := <-rf.startReqCh:
-			rf.handleStart(cmd)
 		default:
 			if rf.killed() {
 				return
