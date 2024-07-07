@@ -134,12 +134,16 @@ func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 		"fastTerm":  reply.reply.FastTerm,
 		"old":       rf.state.getNextIndex(server),
 	})
+	update := false
 	for i := reply.prevLogIndex + 1; i <= reply.prevLogIndex+reply.elemLength; i++ {
 		entry := rf.state.getLogEntry(i - 1)
 		entry.Count = entry.Count.add(reply.server)
 		if rf.isMajority(entry.Count.len()) && entry.Term == rf.state.getTerm() && rf.state.setCommitIndex(i) {
-			rf.updateLogState()
+			update = true
 		}
+	}
+	if update {
+		rf.updateLogState()
 	}
 	log.WithField("new", reply.prevLogIndex+reply.elemLength+1).Info("set next index when success")
 	rf.state.setNextIndex(server, reply.prevLogIndex+reply.elemLength+1, true)
