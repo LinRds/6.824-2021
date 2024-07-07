@@ -35,14 +35,6 @@ import (
 	"github.com/LinRds/raft/labrpc"
 )
 
-func randName() string {
-	char := "abcdefghijkrmnopqrstuvwxyz"
-	name := make([]byte, 3)
-	for i := 0; i < 3; i++ {
-		name[i] = char[rand.Int()%len(char)]
-	}
-	return string(name)
-}
 func init() {
 	//runtime.SetBlockProfileRate(1)
 	//go http.ListenAndServe("localhost:6060", nil)
@@ -50,7 +42,7 @@ func init() {
 		FieldsOrder: []string{"server", "me", "client", "candidate", "term", "prevTerm", "prevIndex", "fastTerm", "fastIndex", "appendFrom", "appendTo", "updateFrom", "updateTo", "old", "new"},
 		NoColors:    true,
 	})
-	file, err := os.OpenFile("test_"+randName()+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile("testlog/test_"+randName()+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		panic(err)
 	}
@@ -206,6 +198,7 @@ type appendEntriesArg struct {
 }
 
 func (rf *Raft) buildAppendArgs(server int, from string) *appendEntriesArg {
+	defer recordElapse(time.Now(), "build append args")
 	if server == rf.me {
 		return nil
 	}
@@ -298,6 +291,7 @@ func (rf *Raft) persistIfVersionMismatch(version int) {
 func (rf *Raft) persist() {
 	// Your code here (2C).
 	// Example:
+	defer recordElapse(time.Now(), "persist")
 	w := new(bytes.Buffer)
 	e := labgob.NewEncoder(w)
 	err := e.Encode(rf.state.pState)
@@ -347,46 +341,6 @@ func (rf *Raft) isMajority(num int) bool {
 	return num >= len(rf.peers)>>1+1
 }
 
-func (rf *Raft) handleStart(cmd *startReq) {
-	begin := time.Now()
-	repCh := cmd.reply
-	if !rf.isLeader() {
-		repCh <- &startRes{index: -1, term: -1, isLeader: false, begin: begin.UnixMilli(), end: time.Now().UnixMilli()}
-		return
-	}
-	log := logrus.WithField("server", rf.me)
-	term := rf.state.getTerm()
-	version := rf.state.version
-	index := rf.state.logLen() + 1
-	//rf.startReplyCh[termLog{Term: term, Index: index}] = repCh
-	entry := &LogEntry{
-		Term:  rf.state.getTerm(),
-		Index: index,
-		Cmd:   cmd.cmd,
-	}
-	entry.Count = entry.Count.add(rf.me)
-	log.WithFields(logrus.Fields{
-		"term":  rf.state.getTerm(),
-		"index": index,
-		"cmd":   cmd.cmd,
-	}).Info("leader append log in Start")
-	rf.state.logAppend(entry)
-	rf.persistIfVersionMismatch(version)
-	repCh <- &startRes{index: index, term: term, isLeader: true, begin: begin.UnixMilli(), end: time.Now().UnixMilli()}
-	rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
-	replys := make([]*AppendEntriesReply, len(rf.peers))
-	for i := 0; i < len(rf.peers); i++ {
-		if i == rf.me {
-			continue
-		}
-		replys[i] = &AppendEntriesReply{}
-		arg := rf.buildAppendArgs(i, "start")
-		go func(server int, arg *appendEntriesArg) {
-			rf.sendAppendEntries(server, arg, replys[server], nil, "start")
-		}(i, arg)
-	}
-}
-
 // Start the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
 // server isn't the leader, returns false. otherwise start the
@@ -404,17 +358,16 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	// if not leader, return
 	begin := time.Now()
 	if !rf.getRaceLeader() {
-		logrus.WithField("wait", time.Now().UnixMilli()-begin.UnixMilli()).
+		logrus.WithField("wait", time.Now().Sub(begin)).
 			WithField("process", time.Now().Sub(begin)).WithField("isLeader", false).Info("start cost")
 		return -1, -1, false
 	}
+	logrus.WithField("cmd", command).Info("start begin")
 	reply := make(chan *startRes, 1)
 	rf.startReqCh <- &startReq{reply: reply, cmd: command}
 	rep := <-reply
-	if rep.isLeader {
-	}
-	logrus.WithField("wait", rep.begin-begin.UnixMilli()).
-		WithField("process", rep.end-rep.begin).WithField("isLeader", rep.isLeader).Info("start cost")
+	logrus.WithField("wait", rep.begin.Sub(begin)).
+		WithField("process", rep.end.Sub(rep.begin)).WithField("isLeader", rep.isLeader).Info("start cost")
 	return rep.index, rep.term, rep.isLeader
 }
 
@@ -422,8 +375,8 @@ type startRes struct {
 	index    int
 	term     int
 	isLeader bool
-	begin    int64 // start to process
-	end      int64 // end process
+	begin    time.Time // start to process
+	end      time.Time // end process
 }
 
 // Kill the tester doesn't halt goroutines created by Raft after each test,
@@ -445,23 +398,6 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
-func (rf *Raft) heartbeat() {
-	if !rf.isLeader() {
-		return
-	}
-	// appendEntries RPC also can refresh this time
-	for i := 0; i < len(rf.peers); i++ {
-		if i == rf.me {
-			continue
-		}
-		arg := rf.buildAppendArgs(i, "heartbeat")
-		go func() {
-			reply := &AppendEntriesReply{}
-			rf.sendAppendEntries(i, arg, reply, nil, "heartbeat")
-		}()
-	}
-}
-
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
@@ -471,56 +407,21 @@ func (rf *Raft) ticker() {
 	for {
 		select {
 		case cmd := <-rf.startReqCh:
-			rf.handleStart(cmd)
-		case <-electionTimeoutTicker.C:
-			if rf.isLeader() {
-				continue
-			}
-			if time.Since(rf.lastHeartbeatFromLeader).Milliseconds() > timeOut {
-				rf.id.setState(rf, candidate)
-				rf.electionOnce(rf.state.getTerm())
-			}
+			start(rf, cmd)
 		case <-heartbeatTicker.C:
-			rf.heartbeat()
-		case <-rf.stateCh:
-			//ns := rf.state.copy()
-			rf.getStateCh <- &stateRes{
-				isLeader: rf.isLeader(),
-				term:     rf.state.getTerm(),
-			}
-		case res := <-rf.electionResCh:
-			if !rf.isCandidate() {
-				continue
-			}
-			term, success := res.Get()
-			if int(term) > rf.state.getTerm() {
-				rf.state.setTerm(int(term))
-				rf.id.setState(rf, follower)
-			} else if success && int(term) == rf.state.getTerm() {
-				if rf.isMajority(rf.id.(*Candidate).incVoteCount()) {
-					rf.id.setState(rf, leader)
-				}
-			}
+			heartbeat(rf)
+		case <-electionTimeoutTicker.C:
+			election(rf, timeOut)
 		case voteReq := <-rf.voteReqCh:
-			rf.voteRepCh <- rf.id.replyVote(rf, voteReq)
+			replyVote(rf, voteReq)
+		case <-rf.stateCh:
+			getState(rf)
+		case res := <-rf.electionResCh:
+			handleElection(rf, res)
 		case appendReq := <-rf.appendEntriesReqCh:
-			term := rf.state.getTerm()
-			if term > appendReq.Term {
-				log := logrus.WithFields(logrus.Fields{
-					"server": rf.me,
-					"client": appendReq.LeaderId,
-					"from":   appendReq.From,
-				})
-				rf.appendEntriesRepCh <- rf.refuseAppendEntries(log.WithField("reason", "term too low"), appendReq.PrevLogTerm)
-				continue
-			}
-			rf.lastHeartbeatFromLeader = time.Now()
-			rf.appendEntriesRepCh <- rf.id.replyAppendEntries(rf, appendReq)
+			appendEntry(rf, appendReq)
 		case appendRes := <-rf.appendEntryResCh:
-			if !rf.isLeader() {
-				continue
-			}
-			rf.handleAppendEntriesReply(appendRes)
+			handleAppendEntry(rf, appendRes)
 		default:
 			if rf.killed() {
 				return
