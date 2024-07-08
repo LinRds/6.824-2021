@@ -100,13 +100,14 @@ type State struct {
 
 // half open interval [from,to]
 func (s *State) getLogRange(from, to int) []*LogEntry {
-	if from < 1 || to < 1 || from > to {
+	if from < 1 || (to != -1 && from > to) {
 		return nil
 	}
+	from -= 1
 	if to == -1 {
-		return s.pState.Logs[from-1:]
+		return s.pState.Logs[from:]
 	}
-	return s.pState.Logs[from-1 : to]
+	return s.pState.Logs[from:to]
 }
 
 // The caller is responsible for ensuring the index is within bounds.

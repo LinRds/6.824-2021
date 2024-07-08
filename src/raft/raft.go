@@ -202,16 +202,17 @@ func (rf *Raft) buildAppendArgs(server int, from string) *appendEntriesArg {
 	if server == rf.me {
 		return nil
 	}
-	prevIndex := rf.state.vState.nextIndex[server] - 1
+	nextIndex := rf.state.vState.nextIndex[server]
+	prevIndex := nextIndex - 1
 	if prevIndex < 0 {
 		log.Fatalf("invalid nextIndex: %v", rf.state.vState.nextIndex)
 	}
 	// nextIndex start from 1
-	cpLen := max(0, len(rf.state.pState.Logs)-prevIndex)
+	cpLen := max(0, rf.state.logLen()-prevIndex)
 	var entries []*LogEntry
 	if cpLen > 0 {
 		entries = make([]*LogEntry, cpLen)
-		for i, item := range rf.state.pState.Logs[prevIndex:] {
+		for i, item := range rf.state.getLogRange(nextIndex, -1) {
 			entries[i] = &LogEntry{
 				Term:  item.Term,
 				Index: item.Index,

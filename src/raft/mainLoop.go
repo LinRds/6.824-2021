@@ -39,9 +39,9 @@ func start(rf *Raft, cmd *startReq) {
 		"cmd":   cmd.cmd,
 	}).Info("leader append log in Start")
 	rf.state.logAppend(entry)
+	rf.state.updateLastIndex(entry)
 	rf.persistIfVersionMismatch(version)
 	repCh <- &startRes{index: index, term: term, isLeader: true, begin: begin, end: time.Now()}
-	rf.state.updateLastIndex(entry)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
