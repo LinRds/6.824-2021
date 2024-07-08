@@ -20,7 +20,8 @@ var (
 type identity interface {
 	replyVote(rf *Raft, args *RequestVoteArgs) int64
 	replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply
-	setState(rf *Raft, id int)
+	replyInstallSnapshot(rf *Raft, args *InstallSnapshotReq) *InstallSnapshotResp
+	setState(rf *Raft, id int) identity
 	getState() int
 }
 
@@ -44,21 +45,20 @@ func (l *Leader) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	if term >= args.Term {
 		return RpcRefuse(term)
 	}
-	l.setState(rf, follower)
-	return rf.id.replyVote(rf, args)
+	return l.setState(rf, follower).replyVote(rf, args)
 }
 
 func (l *Leader) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
-	l.setState(rf, follower)
-	return rf.id.replyAppendEntries(rf, args)
+	return l.setState(rf, follower).replyAppendEntries(rf, args)
 }
 
-func (l *Leader) setState(rf *Raft, id int) {
+func (l *Leader) setState(rf *Raft, id int) identity {
 	if id != follower {
 		logrus.Fatal("leader only can trans to follower")
 	}
 	l.leavingOffice(rf)
 	rf.id = rf.getId(follower)
+	return rf.id
 }
 
 func (l *Leader) getState() int {
@@ -182,7 +182,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	return rf.acceptAppendEntries(log)
 }
 
-func (f *Follower) setState(rf *Raft, id int) {
+func (f *Follower) setState(rf *Raft, id int) identity {
 	if id == leader {
 		logrus.Fatal("follower can not trans to leader directly")
 	}
@@ -191,6 +191,7 @@ func (f *Follower) setState(rf *Raft, id int) {
 		rf.state.voteForSelf(rf.me)
 	}
 	rf.id = rf.getId(id)
+	return rf.id
 }
 
 func (f *Follower) getState() int {
@@ -212,16 +213,14 @@ func (c *Candidate) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	if term >= args.Term {
 		return RpcRefuse(term)
 	}
-	c.setState(rf, follower)
-	return rf.id.replyVote(rf, args)
+	return c.setState(rf, follower).replyVote(rf, args)
 }
 
 func (c *Candidate) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
-	c.setState(rf, follower)
-	return rf.id.replyAppendEntries(rf, args)
+	return c.setState(rf, follower).replyAppendEntries(rf, args)
 }
 
-func (c *Candidate) setState(rf *Raft, id int) {
+func (c *Candidate) setState(rf *Raft, id int) identity {
 	rf.id = rf.getId(id)
 	if id == leader {
 		rf.id.(*Leader).takingOffice(rf)
@@ -231,6 +230,7 @@ func (c *Candidate) setState(rf *Raft, id int) {
 		rf.state.incTerm()
 		rf.state.voteForSelf(rf.me)
 	}
+	return rf.id
 }
 
 func (c *Candidate) getState() int {

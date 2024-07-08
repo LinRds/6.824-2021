@@ -22,11 +22,18 @@ type LogEntry struct {
 	Cmd   any
 }
 
+type Snapshot struct {
+	LastIndex int
+	LastValue int
+	Value     any
+}
+
 // PersistentState Updated on stable storage before responding to RPC
 type PersistentState struct {
 	CurrentTerm int
 	Vote        *Vote
 	Logs        []*LogEntry
+	Snapshot    *Snapshot
 }
 
 func (ps *PersistentState) copy() *PersistentState {
@@ -115,10 +122,17 @@ func (s *State) getLogEntry(index int) *LogEntry {
 	return s.pState.Logs[index-1]
 }
 
+func (s *State) getSnapshot() *Snapshot {
+	return s.pState.Snapshot
+}
+
 // if two entry equal, any entry before are equal too
 func (s *State) lastLogEntry() (int, int) {
 	n := s.logLen()
 	if n == 0 {
+		if snapshot := s.getSnapshot(); snapshot != nil {
+			return snapshot.LastValue, snapshot.LastValue
+		}
 		return -1, -1
 	}
 	lastEntry := s.getLogEntry(n)
