@@ -56,18 +56,18 @@ func start(rf *Raft, cmd *startReq) {
 }
 
 func election(rf *Raft, timeOut int64) {
-	defer recordElapse(time.Now(), "election", rf.me)
 	if rf.isLeader() {
 		return
 	}
+	defer recordElapse(time.Now(), "election", rf.me)
 	if time.Since(rf.lastHeartbeatFromLeader).Milliseconds() > timeOut {
 		rf.id.setState(rf, candidate)
 		rf.electionOnce(rf.state.getTerm())
 	}
 }
 
-func handleElection(rf *Raft, res *RequestVoteReply) {
-	defer recordElapse(time.Now(), "handleElection", rf.me)
+func handleVote(rf *Raft, res *RequestVoteReply) {
+	defer recordElapse(time.Now(), "handleVote", rf.me)
 	if !rf.isCandidate() {
 		return
 	}
@@ -111,8 +111,8 @@ func replyVote(rf *Raft, req *RequestVoteArgs) {
 	rf.voteRepCh <- rf.id.replyVote(rf, req)
 }
 
-func appendEntry(rf *Raft, req *AppendEntriesArgs) {
-	defer recordElapse(time.Now(), "appendEntry", rf.me)
+func replyAppendEntry(rf *Raft, req *AppendEntriesArgs) {
+	defer recordElapse(time.Now(), "replyAppendEntry", rf.me)
 	term := rf.state.getTerm()
 	if term > req.Term {
 		log := logrus.WithFields(logrus.Fields{

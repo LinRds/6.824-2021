@@ -80,9 +80,17 @@ type State struct {
 	vState  *volatileState
 }
 
+// half open interval [from,to)
+func (s *State) getLogRange(from, to int) []*LogEntry {
+	if to == -1 {
+		return s.pState.Logs[from-1:]
+	}
+	return s.pState.Logs[from-1 : to-1]
+}
+
 // The caller is responsible for ensuring the index is within bounds.
 func (s *State) getLogEntry(index int) *LogEntry {
-	return s.pState.Logs[index]
+	return s.pState.Logs[index-1]
 }
 
 func (s *State) lastLogEntry() (int, int) {

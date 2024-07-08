@@ -24,7 +24,7 @@ import (
 	"github.com/sirupsen/logrus"
 	"log"
 	"math/rand"
-	//_ "net/http/pprof"
+	_ "net/http/pprof"
 	"os"
 	//	"bytes"
 	"sync"
@@ -223,7 +223,7 @@ func (rf *Raft) buildAppendArgs(server int, from string) *appendEntriesArg {
 	if prevIndex == 0 {
 		prevTerm = 0
 	} else {
-		prevTerm = rf.state.getLogEntry(prevIndex - 1).Term
+		prevTerm = rf.state.getLogEntry(prevIndex).Term
 	}
 	arg := &AppendEntriesArgs{
 		Term:         rf.state.pState.CurrentTerm,
@@ -411,18 +411,18 @@ func (rf *Raft) ticker() {
 		select {
 		case cmd := <-rf.startReqCh:
 			start(rf, cmd)
+		case <-rf.stateCh:
+			getState(rf)
 		case <-heartbeatTicker.C:
 			heartbeat(rf)
 		case <-electionTimeoutTicker.C:
 			election(rf, timeOut)
 		case voteReq := <-rf.voteReqCh:
 			replyVote(rf, voteReq)
-		case <-rf.stateCh:
-			getState(rf)
 		case res := <-rf.electionResCh:
-			handleElection(rf, res)
+			handleVote(rf, res)
 		case appendReq := <-rf.appendEntriesReqCh:
-			appendEntry(rf, appendReq)
+			replyAppendEntry(rf, appendReq)
 		case appendRes := <-rf.appendEntryResCh:
 			handleAppendEntry(rf, appendRes)
 		default:

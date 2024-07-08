@@ -111,11 +111,13 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	log := logrus.WithFields(logrus.Fields{
 		"server":       rf.me,
 		"oldTerm":      oldTerm,
+		"newTerm":      args.Term,
 		"prevIndex":    args.PrevLogIndex,
 		"prevTerm":     args.PrevLogTerm,
 		"from":         args.From,
 		"leaderCommit": args.LeaderCommit,
 		"client":       args.LeaderId,
+		"entryLen":     len(args.Entries),
 	})
 	if args.Term < oldTerm {
 		log = log.WithField("reason", "term too low")
@@ -138,12 +140,25 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 			return rf.refuseAppendEntries(log, args.PrevLogTerm)
 		}
 	}
-	// To prevent errors from requests with outdated parameters,
-	// validate them to avoid inadvertent deletion of already append logs.
-	if oldTerm == args.Term && args.PrevLogIndex < rf.state.logLen() {
+	defer func() {
+		rf.persistIfVersionMismatch(version)
+		// if commitIndex > lastApplied: increment lastApplied, apply
+		// log[lastApplied] to state machine
+		if rf.state.setCommitIndex(min(args.LeaderCommit, rf.state.logLen())) {
+			rf.updateLogState()
+		}
+	}()
+	entryLen := len(args.Entries)
+	if entryLen == 0 {
 		return rf.acceptAppendEntries(log)
 	}
-	// TODO if from == heartbeat && len(log) == 0 return ?
+	// To prevent errors from requests with outdated parameters,
+	// validate them to avoid inadvertent deletion of already append logs.
+	appendEnd := args.PrevLogIndex + entryLen
+	if appendEnd <= rf.state.logLen() && rf.state.getLogEntry(appendEnd).Term == args.Entries[entryLen-1].Term {
+		return rf.acceptAppendEntries(log)
+	}
+	// TODO if from == "fast sync" && len(log) == 0 return ?
 	for _, entry := range rf.state.pState.Logs[args.PrevLogIndex:] {
 		delete(rf.state.vState.lastIndexEachTerm, entry.Term)
 	}
@@ -151,11 +166,9 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	// append any new entries not already in the log
 	rf.state.pState.Logs = rf.state.pState.Logs[:args.PrevLogIndex]
 	rf.state.logAppend(args.Entries...)
+	// from could be bigger than to in fast sync request which entry is nil
 	from := args.PrevLogIndex + 1
 	to := rf.state.logLen()
-	if from > to {
-		log.Fatal("from bigger than to")
-	}
 	log = log.WithFields(logrus.Fields{
 		"appendFrom": from,
 		"appendTo":   to,
@@ -164,12 +177,6 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 		if entry.Index > rf.state.vState.lastIndexEachTerm[entry.Term] {
 			rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
 		}
-	}
-	rf.persistIfVersionMismatch(version)
-	// if commitIndex > lastApplied: increment lastApplied, apply
-	// log[lastApplied] to state machine
-	if rf.state.setCommitIndex(min(args.LeaderCommit, rf.state.logLen())) {
-		rf.updateLogState()
 	}
 	return rf.acceptAppendEntries(log)
 }

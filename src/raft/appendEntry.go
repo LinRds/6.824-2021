@@ -91,7 +91,7 @@ func (rf *Raft) acceptAppendEntries(log *logrus.Entry) *AppendEntriesReply {
 	reply := new(AppendEntriesReply)
 	myTerm := rf.state.getTerm()
 	reply.TermAndSuccess = RpcAccept(myTerm)
-	log.WithField("term", myTerm).Info("append entries success")
+	log.Info("append entries success")
 	return reply
 }
 
@@ -136,14 +136,15 @@ func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 	})
 	update := false
 	for i := reply.prevLogIndex + 1; i <= reply.prevLogIndex+reply.elemLength; i++ {
-		entry := rf.state.getLogEntry(i - 1)
+		entry := rf.state.getLogEntry(i)
 		entry.Count = entry.Count.add(reply.server)
 		if rf.isMajority(entry.Count.len()) && entry.Term == rf.state.getTerm() && rf.state.setCommitIndex(i) {
 			update = true
+			rf.updateLogState()
 		}
 	}
 	if update {
-		rf.updateLogState()
+		//rf.updateLogState()
 	}
 	log.WithField("new", reply.prevLogIndex+reply.elemLength+1).Info("set next index when success")
 	rf.state.setNextIndex(server, reply.prevLogIndex+reply.elemLength+1, true)
@@ -165,11 +166,11 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 		"old":       rf.state.getNextIndex(server),
 	})
 	// fastIndex = 0 when fastTerm = -1
-	if fastTerm == rf.state.getTerm() || fastTerm == -1 {
-		log.WithField("new", fastIndex+1).Warn("set next index when failure")
-		rf.state.setNextIndex(server, fastIndex+1, false)
-		return
-	}
+	//if fastTerm == rf.state.getTerm() || fastTerm == -1 {
+	//	log.WithField("new", fastIndex+1).Warn("set next index when failure")
+	//	rf.state.setNextIndex(server, fastIndex+1, false)
+	//	return
+	//}
 
 	// fastTerm < myTerm
 	// clip to avoid fail in TestRejoin2B, as disconnected leader may try to agree on some entries
@@ -189,7 +190,7 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 	}
 	if fastIndex > 0 {
 		// safety validation
-		entry := rf.state.getLogEntry(fastIndex - 1)
+		entry := rf.state.getLogEntry(fastIndex)
 		if entry.Term != fastTerm {
 			log.Fatalf("expected fast term to be %d, got %d", fastTerm, entry.Term)
 		}
