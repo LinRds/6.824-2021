@@ -26,3 +26,7 @@ func randName() string {
 	}
 	return string(name)
 }
+
+func isLogEqual(l1, l2 *LogEntry) bool {
+	return l1.Term == l2.Term && l1.Index == l2.Index
+}

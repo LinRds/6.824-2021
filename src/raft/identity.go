@@ -1,7 +1,7 @@
 package raft
 
 import (
-	"fmt"
+	"errors"
 	"github.com/sirupsen/logrus"
 	"time"
 )
@@ -10,6 +10,11 @@ const (
 	follower = iota
 	candidate
 	leader
+)
+
+var (
+	errLogTooShort = errors.New("log too short")
+	errLogNotMatch = errors.New("log not match")
 )
 
 type identity interface {
@@ -74,21 +79,21 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	term := rf.state.getTerm()
 	version := rf.state.version
 	defer rf.persistIfVersionMismatch(version)
+	log := logrus.WithFields(logrus.Fields{
+		"server": rf.me,
+		"client": args.CandidateId,
+	})
 	if term > args.Term {
-		logrus.WithFields(logrus.Fields{
-			"me":        rf.me,
-			"candidate": args.CandidateId,
+		log.WithFields(logrus.Fields{
 			"myTerm":    rf.state.getTerm(),
 			"otherTerm": args.Term,
 		}).Warn("refuse vote")
 		return RpcRefuse(rf.state.getTerm()) // reply new term for receiver to validate whether it is a reply for old term
 	}
 	if term == args.Term && rf.state.isVoted() {
-		logrus.WithFields(logrus.Fields{
-			"me":        rf.me,
-			"candidate": args.CandidateId,
-			"voted":     rf.state.pState.Vote.Voted,
-			"votedFor":  rf.state.pState.Vote.VotedFor,
+		log.WithFields(logrus.Fields{
+			"voted":    rf.state.pState.Vote.Voted,
+			"votedFor": rf.state.pState.Vote.VotedFor,
 		}).Warn("refuse vote")
 		return RpcRefuse(rf.state.getTerm()) // reply new term for receiver to validate whether it is a reply for old term
 	}
@@ -105,6 +110,19 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	return RpcAccept(rf.state.getTerm())
 }
 
+func prevLogValidation(rf *Raft, prevIndex, prevTerm int) error {
+	if prevIndex > rf.state.logLen() {
+		return errLogTooShort
+	}
+	// reply false if log doesn't contain an entry at prevLogIndex
+	// whose term matches prevLogTerm
+	prevItem := rf.state.getLogEntry(prevIndex)
+	if prevItem == nil || prevItem.Term != prevTerm {
+		return errLogNotMatch
+	}
+	return nil
+}
+
 func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
 	oldTerm := rf.state.getTerm()
 	version := rf.state.version
@@ -119,27 +137,18 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 		"client":       args.LeaderId,
 		"entryLen":     len(args.Entries),
 	})
-	if args.Term < oldTerm {
-		log = log.WithField("reason", "term too low")
-		return rf.refuseAppendEntries(log, args.PrevLogTerm)
-	}
 	if oldTerm < args.Term {
 		rf.state.setTerm(args.Term)
 	}
-
-	if args.PrevLogIndex != 0 {
-		if args.PrevLogIndex > rf.state.logLen() {
-			log = log.WithField("reason", "log too short")
-			return rf.refuseAppendEntries(log, args.PrevLogTerm)
-		}
-		// reply false if log doesn't contain an entry at prevLogIndex
-		// whose term matches prevLogTerm
-		prevItem := rf.state.pState.Logs[args.PrevLogIndex-1]
-		if prevItem == nil || prevItem.Term != args.PrevLogTerm {
-			log = log.WithField("reason", fmt.Sprintf("log not match, expected %d got %d", prevItem.Term, args.PrevLogTerm))
-			return rf.refuseAppendEntries(log, args.PrevLogTerm)
-		}
+	var err error
+	if args.PrevLogIndex > 0 {
+		err = prevLogValidation(rf, args.PrevLogIndex, args.PrevLogTerm)
 	}
+	if err != nil {
+		log = log.WithField("reason", err)
+		return rf.refuseAppendEntries(log, args.PrevLogTerm)
+	}
+
 	defer func() {
 		rf.persistIfVersionMismatch(version)
 		// if commitIndex > lastApplied: increment lastApplied, apply
@@ -154,17 +163,13 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	}
 	// To prevent errors from requests with outdated parameters,
 	// validate them to avoid inadvertent deletion of already append logs.
-	appendEnd := args.PrevLogIndex + entryLen
-	if appendEnd <= rf.state.logLen() && rf.state.getLogEntry(appendEnd).Term == args.Entries[entryLen-1].Term {
+	lastEntry := args.Entries[entryLen-1]
+	if lastEntry.Index <= rf.state.logLen() && isLogEqual(lastEntry, rf.state.getLogEntry(lastEntry.Index)) {
 		return rf.acceptAppendEntries(log)
 	}
-	// TODO if from == "fast sync" && len(log) == 0 return ?
-	for _, entry := range rf.state.pState.Logs[args.PrevLogIndex:] {
-		delete(rf.state.vState.lastIndexEachTerm, entry.Term)
-	}
-	//log.Printf(`---->server %d,start append entries<----`, rf.me)
-	// append any new entries not already in the log
-	rf.state.pState.Logs = rf.state.pState.Logs[:args.PrevLogIndex]
+	rf.state.deleteLastIndex(rf.state.getLogRange(args.PrevLogIndex+1, -1))
+	// append any entries in args
+	rf.state.pState.Logs = rf.state.getLogRange(1, args.PrevLogIndex)
 	rf.state.logAppend(args.Entries...)
 	// from could be bigger than to in fast sync request which entry is nil
 	from := args.PrevLogIndex + 1
@@ -173,11 +178,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 		"appendFrom": from,
 		"appendTo":   to,
 	})
-	for _, entry := range args.Entries {
-		if entry.Index > rf.state.vState.lastIndexEachTerm[entry.Term] {
-			rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
-		}
-	}
+	rf.state.updateLastIndex(args.Entries...)
 	return rf.acceptAppendEntries(log)
 }
 

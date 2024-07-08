@@ -41,16 +41,14 @@ func start(rf *Raft, cmd *startReq) {
 	rf.state.logAppend(entry)
 	rf.persistIfVersionMismatch(version)
 	repCh <- &startRes{index: index, term: term, isLeader: true, begin: begin, end: time.Now()}
-	rf.state.vState.lastIndexEachTerm[entry.Term] = entry.Index
-	replys := make([]*AppendEntriesReply, len(rf.peers))
+	rf.state.updateLastIndex(entry)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
-		replys[i] = &AppendEntriesReply{}
 		arg := rf.buildAppendArgs(i, "start")
 		go func(server int, arg *appendEntriesArg) {
-			rf.sendAppendEntries(server, arg, replys[server], nil, "start")
+			rf.sendAppendEntries(server, arg, &AppendEntriesReply{}, nil, "start")
 		}(i, arg)
 	}
 }
@@ -127,10 +125,47 @@ func replyAppendEntry(rf *Raft, req *AppendEntriesArgs) {
 	rf.appendEntriesRepCh <- rf.id.replyAppendEntries(rf, req)
 }
 
-func handleAppendEntry(rf *Raft, rep *appendEntryResult) {
+func handleAppendEntry(rf *Raft, re *appendEntryResult) {
 	defer recordElapse(time.Now(), "handleAppendEntry", rf.me)
 	if !rf.isLeader() {
 		return
 	}
-	rf.handleAppendEntriesReply(rep)
+	// There might be a case where returning is not necessary,
+	// which is when the version change is caused by logAppend rather than term or vote.
+	// However, in this case, subsequent heartbeats or new appendEntriesReq can still achieve log synchronization,
+	// so returning here is not wrong.
+	//if !rf.state.match(re.stateVersion) {
+	//	log.Printf(versionNotMatch(rf.state.version, re.stateVersion))
+	//	return
+	//}
+	log := logrus.WithField("server", rf.me)
+	myTerm := rf.state.getTerm()
+	term, success := re.reply.Get()
+	if term == 0 {
+		log.Warn("term is 0")
+		return
+	}
+	if re.prevLogIndex != rf.state.getNextIndex(re.server)-1 {
+		log.Warn("prevLogIndex not match")
+		return
+	}
+	if int(term) > myTerm {
+		rf.state.setTerm(int(term))
+		rf.id.setState(rf, follower)
+		return
+	}
+	if success && int(term) != myTerm {
+		log.Warn("receive reply from old term")
+		return
+	}
+	if success {
+		handleSuccess(rf, re, log)
+	} else {
+		handleFailure(rf, re, log)
+	}
+
+	// fast sync
+	// TODO avoid requests not necessary
+	arg := rf.buildAppendArgs(re.server, "fast sync")
+	go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")
 }

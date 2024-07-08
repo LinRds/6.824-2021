@@ -2,7 +2,25 @@ package raft
 
 import (
 	"github.com/sirupsen/logrus"
+	"math/bits"
 )
+
+type bitMap uint64
+
+func (b bitMap) add(i int) bitMap {
+	return b | (1 << i)
+}
+
+func (b bitMap) len() int {
+	return bits.OnesCount64(uint64(b))
+}
+
+type LogEntry struct {
+	Term  int
+	Count bitMap
+	Index int
+	Cmd   any
+}
 
 // PersistentState Updated on stable storage before responding to RPC
 type PersistentState struct {
@@ -80,12 +98,15 @@ type State struct {
 	vState  *volatileState
 }
 
-// half open interval [from,to)
+// half open interval [from,to]
 func (s *State) getLogRange(from, to int) []*LogEntry {
+	if from < 1 || to < 1 || from > to {
+		return nil
+	}
 	if to == -1 {
 		return s.pState.Logs[from-1:]
 	}
-	return s.pState.Logs[from-1 : to-1]
+	return s.pState.Logs[from-1 : to]
 }
 
 // The caller is responsible for ensuring the index is within bounds.
@@ -93,12 +114,14 @@ func (s *State) getLogEntry(index int) *LogEntry {
 	return s.pState.Logs[index-1]
 }
 
+// if two entry equal, any entry before are equal too
 func (s *State) lastLogEntry() (int, int) {
 	n := s.logLen()
 	if n == 0 {
 		return -1, -1
 	}
-	return s.pState.Logs[n-1].Term, s.pState.Logs[n-1].Index
+	lastEntry := s.getLogEntry(n)
+	return lastEntry.Term, lastEntry.Index
 }
 
 func (s *State) setCommitIndex(index int) bool {
@@ -161,14 +184,6 @@ func (s *State) setTerm(term int) {
 	s.pState.Vote = nil
 }
 
-func (s *State) copy() *State {
-	return &State{
-		version: s.version,
-		pState:  s.pState.copy(),
-		vState:  s.vState.copy(),
-	}
-}
-
 func (s *State) setNextIndex(server, index int, inc bool) {
 	s.vState.setNextIndex(server, index, inc)
 }
@@ -194,4 +209,26 @@ func (s *State) logAppend(entries ...*LogEntry) {
 
 func (s *State) logLen() int {
 	return len(s.pState.Logs)
+}
+
+func (s *State) fastIndex(term int) (int, int) {
+	return s.vState.fastIndex(term)
+}
+
+func (s *State) lastIndexInTerm(term int) int {
+	return s.vState.lastIndexInTerm(term)
+}
+
+func (s *State) updateLastIndex(entries ...*LogEntry) {
+	for _, entry := range entries {
+		if entry.Index > s.vState.lastIndexEachTerm[entry.Term] {
+			s.vState.lastIndexEachTerm[entry.Term] = entry.Index
+		}
+	}
+}
+
+func (s *State) deleteLastIndex(entries []*LogEntry) {
+	for _, entry := range entries {
+		delete(s.vState.lastIndexEachTerm, entry.Term)
+	}
 }

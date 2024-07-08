@@ -3,7 +3,6 @@ package raft
 import (
 	"fmt"
 	"github.com/sirupsen/logrus"
-	"math/bits"
 	"sync/atomic"
 )
 
@@ -14,23 +13,6 @@ const (
 type termLog struct {
 	Term  int
 	Index int
-}
-
-type bitMap uint64
-
-func (b bitMap) add(i int) bitMap {
-	return b | (1 << i)
-}
-
-func (b bitMap) len() int {
-	return bits.OnesCount64(uint64(b))
-}
-
-type LogEntry struct {
-	Term  int
-	Count bitMap
-	Index int
-	Cmd   any
 }
 
 type AppendEntriesArgs struct {
@@ -78,7 +60,7 @@ func (rf *Raft) RequestAppendEntries(args *AppendEntriesArgs, reply *AppendEntri
 func (rf *Raft) refuseAppendEntries(log *logrus.Entry, term int) *AppendEntriesReply {
 	reply := new(AppendEntriesReply)
 	reply.TermAndSuccess = RpcRefuse(rf.state.getTerm())
-	reply.FastTerm, reply.FastIndex = rf.state.vState.fastIndex(term)
+	reply.FastTerm, reply.FastIndex = rf.state.fastIndex(term)
 	log.WithFields(logrus.Fields{
 		"fastTerm":  reply.FastTerm,
 		"fastIndex": reply.FastIndex,
@@ -175,10 +157,10 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 	// fastTerm < myTerm
 	// clip to avoid fail in TestRejoin2B, as disconnected leader may try to agree on some entries
 	// it's un committed log in some term is bigger than leader
-	fastIndex = min(fastIndex, rf.state.vState.lastIndexInTerm(fastTerm))
+	fastIndex = min(fastIndex, rf.state.lastIndexInTerm(fastTerm))
 	// leader may not have log in fastTerm
 	if fastIndex < 0 {
-		fastTerm, fastIndex = rf.state.vState.fastIndex(fastTerm)
+		fastTerm, fastIndex = rf.state.fastIndex(fastTerm)
 		// leader not have any log in term less than fastTerm
 		if fastTerm == -1 {
 			log.WithFields(logrus.Fields{
@@ -201,45 +183,4 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 
 func handleFailure(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 	setNextIndexWhenFailure(rf, reply, log)
-}
-
-func (rf *Raft) handleAppendEntriesReply(re *appendEntryResult) {
-	// There might be a case where returning is not necessary,
-	// which is when the version change is caused by logAppend rather than term or vote.
-	// However, in this case, subsequent heartbeats or new appendEntriesReq can still achieve log synchronization,
-	// so returning here is not wrong.
-	//if !rf.state.match(re.stateVersion) {
-	//	log.Printf(versionNotMatch(rf.state.version, re.stateVersion))
-	//	return
-	//}
-	log := logrus.WithField("server", rf.me)
-	myTerm := rf.state.getTerm()
-	term, success := re.reply.Get()
-	if term == 0 {
-		log.Warn("term is 0")
-		return
-	}
-	if re.prevLogIndex != rf.state.getNextIndex(re.server)-1 {
-		log.Warn("prevLogIndex not match")
-		return
-	}
-	if int(term) > myTerm {
-		rf.state.setTerm(int(term))
-		rf.id.setState(rf, follower)
-		return
-	}
-	if success && int(term) != myTerm {
-		log.Warn("receive reply from old term")
-		return
-	}
-	if success {
-		handleSuccess(rf, re, log)
-	} else {
-		handleFailure(rf, re, log)
-	}
-
-	// fast sync
-	// TODO avoid requests not necessary
-	arg := rf.buildAppendArgs(re.server, "fast sync")
-	go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")
 }
