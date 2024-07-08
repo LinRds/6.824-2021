@@ -122,11 +122,10 @@ func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 		entry.Count = entry.Count.add(reply.server)
 		if rf.isMajority(entry.Count.len()) && entry.Term == rf.state.getTerm() && rf.state.setCommitIndex(i) {
 			update = true
-			rf.updateLogState()
 		}
 	}
 	if update {
-		//rf.updateLogState()
+		rf.updateLogState()
 	}
 	log.WithField("new", reply.prevLogIndex+reply.elemLength+1).Info("set next index when success")
 	rf.state.setNextIndex(server, reply.prevLogIndex+reply.elemLength+1, true)
