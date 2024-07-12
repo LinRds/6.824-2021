@@ -38,15 +38,22 @@ import (
 func init() {
 	//runtime.SetBlockProfileRate(1)
 	//go http.ListenAndServe("localhost:6060", nil)
+	outPutToFile := len(os.Getenv("OUT_PUT_TO_FILE")) > 0
+	noColor := false
+	if outPutToFile {
+		noColor = true
+	}
 	logrus.SetFormatter(&nested.Formatter{
 		FieldsOrder: []string{"server", "me", "client", "candidate", "term", "prevTerm", "prevIndex", "fastTerm", "fastIndex", "appendFrom", "appendTo", "updateFrom", "updateTo", "old", "new"},
-		NoColors:    true,
+		NoColors:    noColor,
 	})
-	file, err := os.OpenFile("testlog/test_"+randName()+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
-	if err != nil {
-		panic(err)
+	if outPutToFile {
+		file, err := os.OpenFile("testlog/test_"+randName()+".log", os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+		if err != nil {
+			panic(err)
+		}
+		logrus.SetOutput(file)
 	}
-	logrus.SetOutput(file)
 }
 
 const (
