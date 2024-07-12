@@ -119,6 +119,8 @@ type Raft struct {
 	appendEntriesRepCh      chan *AppendEntriesReply
 	appendEntryResCh        chan *appendEntryResult
 	startReqCh              chan *startReq
+	snapshotReqCh           chan *InstallSnapshotReq
+	snapshotRepCh           chan *InstallSnapshotResp
 }
 
 func (rf *Raft) saveRaceLeader(isLeader bool) {
@@ -139,6 +141,8 @@ func (rf *Raft) initChan() {
 	rf.appendEntriesRepCh = make(chan *AppendEntriesReply)
 	rf.appendEntryResCh = make(chan *appendEntryResult, 10)
 	rf.startReqCh = make(chan *startReq, 10)
+	rf.snapshotReqCh = make(chan *InstallSnapshotReq)
+	rf.snapshotRepCh = make(chan *InstallSnapshotResp)
 }
 
 type startReq struct {
@@ -191,68 +195,21 @@ func (rf *Raft) updateLogState() {
 	rf.state.vState.lastApplied = rf.state.vState.commitIndex
 }
 
-type appendEntriesArg struct {
-	arg     *AppendEntriesArgs
-	version int
-	from    string
-}
-
-func (rf *Raft) buildAppendArgs(server int, from string) *appendEntriesArg {
-	defer recordElapse(time.Now(), "build append args", rf.me)
-	if server == rf.me {
-		return nil
-	}
-	nextIndex := rf.state.vState.nextIndex[server]
-	prevIndex := nextIndex - 1
-	if prevIndex < 0 {
-		log.Fatalf("invalid nextIndex: %v", rf.state.vState.nextIndex)
-	}
-	// nextIndex start from 1
-	cpLen := max(0, rf.state.logLen()-prevIndex)
-	var entries []*LogEntry
-	if cpLen > 0 {
-		entries = make([]*LogEntry, cpLen)
-		for i, item := range rf.state.getLogRange(nextIndex, -1) {
-			entries[i] = &LogEntry{
-				Term:  item.Term,
-				Index: item.Index,
-				Cmd:   item.Cmd,
-			}
-		}
-	}
-	var prevTerm int
-	if prevIndex == 0 {
-		prevTerm = 0
-	} else {
-		prevTerm = rf.state.getLogEntry(prevIndex).Term
-	}
-	arg := &AppendEntriesArgs{
-		Term:         rf.state.pState.CurrentTerm,
-		LeaderId:     rf.me,
-		PrevLogIndex: prevIndex,
-		PrevLogTerm:  prevTerm,
-		Entries:      entries,
-		LeaderCommit: rf.state.vState.commitIndex,
-		From:         from,
-	}
-	return &appendEntriesArg{arg: arg, version: rf.state.version, from: from}
-}
-
 // LogControllerLoop deprecated
-func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
-	for {
-		select {
-		case <-stopCh:
-			return
-		default:
-			arg := rf.buildAppendArgs(i, "log control loop")
-			// TODO 等到能够确定matchIndex的更新机制后，尝试减少不必要的
-			reply := &AppendEntriesReply{}
-			rf.sendAppendEntries(i, arg, reply, nil, "logController loop")
-			time.Sleep(100 * time.Millisecond)
-		}
-	}
-}
+//func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
+//	for {
+//		select {
+//		case <-stopCh:
+//			return
+//		default:
+//			arg := buildAppendArgs(rf, i, "log control loop")
+//			// TODO 等到能够确定matchIndex的更新机制后，尝试减少不必要的
+//			reply := &AppendEntriesReply{}
+//			rf.sendAppendEntries(i, arg, reply, nil, "logController loop")
+//			time.Sleep(100 * time.Millisecond)
+//		}
+//	}
+//}
 
 func (rf *Raft) setVote(vote *Vote) {
 	versionIncLog("set vote")
@@ -325,7 +282,16 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
-
+	var snap Snapshot
+	dec := labgob.NewDecoder(bytes.NewReader(snapshot))
+	if err := dec.Decode(&snap); err != nil {
+		return false
+	}
+	lastTerm, lastIndex := rf.state.lastLogEntry()
+	if lastTerm > lastIncludedTerm || lastIndex > lastIncludedIndex {
+		return false
+	}
+	//rf.state.installSnapshot(&snap)
 	return true
 }
 
@@ -335,7 +301,12 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 // that index. Raft should now trim its log as much as possible.
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
-
+	decoder := labgob.NewDecoder(bytes.NewReader(snapshot))
+	if err := decoder.Decode(rf.state.getSnapshot()); err != nil {
+		logrus.Fatal(err)
+		return
+	}
+	rf.state.pState.Logs = rf.state.getLogRange(index+1, -1)
 }
 
 func (rf *Raft) isMajority(num int) bool {
@@ -400,6 +371,30 @@ func (rf *Raft) killed() bool {
 	return z == 1
 }
 
+func (rf *Raft) makeSnapshot() {
+	if len(rf.state.pState.Logs) < SnapShotInterval {
+		return
+	}
+	firstEntry := rf.state.pState.Logs[0]
+	commitIndex := rf.state.getCommitIndex()
+	lastCommitEntry := rf.state.getLogEntry(commitIndex)
+	if lastCommitEntry.Index-firstEntry.Index < SnapShotInterval {
+		return
+	}
+
+	w := new(bytes.Buffer)
+	e := labgob.NewEncoder(w)
+	err := e.Encode(&Snapshot{
+		LastIndex: lastCommitEntry.Index,
+		LastTerm:  lastCommitEntry.Term,
+		Value:     lastCommitEntry.Cmd,
+	})
+	if err != nil {
+		logrus.Fatal("encode snap failed")
+	}
+	rf.Snapshot(commitIndex, w.Bytes())
+}
+
 // The ticker go routine starts a new election if this peer hasn't received
 // heartsbeats recently.
 func (rf *Raft) ticker() {
@@ -426,6 +421,10 @@ func (rf *Raft) ticker() {
 			replyAppendEntry(rf, appendReq)
 		case appendRes := <-rf.appendEntryResCh:
 			handleAppendEntry(rf, appendRes)
+		case snapshotReq := <-rf.snapshotReqCh:
+			replyInstallSnapshot(rf, snapshotReq)
+		case snapshotResp := <-rf.snapshotRepCh:
+			handleInstallSnapshot(rf, snapshotResp)
 		default:
 			if rf.killed() {
 				return
@@ -452,7 +451,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.applyCh = applyCh
 
 	// Your initialization code here (2A, 2B, 2C).
-	rf.fol = &Follower{}
+	rf.fol = &Follower{make(map[logIndex][]byte)}
 	rf.led = &Leader{}
 	rf.cdi = &Candidate{}
 	rf.id = rf.getId(follower) // initial to follower

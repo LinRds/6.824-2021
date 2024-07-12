@@ -1,6 +1,8 @@
 package raft
 
 import (
+	"bytes"
+	"github.com/LinRds/raft/labgob"
 	"github.com/sirupsen/logrus"
 	"math/bits"
 )
@@ -24,8 +26,18 @@ type LogEntry struct {
 
 type Snapshot struct {
 	LastIndex int
-	LastValue int
+	LastTerm  int
 	Value     any
+}
+
+func (s Snapshot) byte() []byte {
+	w := new(bytes.Buffer)
+	enc := labgob.NewEncoder(w)
+	if err := enc.Encode(&s); err != nil {
+		logrus.WithField("error", err).Fatal("encode failed")
+		return nil
+	}
+	return w.Bytes()
 }
 
 // PersistentState Updated on stable storage before responding to RPC
@@ -106,6 +118,7 @@ type State struct {
 }
 
 // half open interval [from,to]
+// TODO refactor after using snapshot
 func (s *State) getLogRange(from, to int) []*LogEntry {
 	if from < 1 || (to != -1 && from > to) {
 		return nil
@@ -117,6 +130,7 @@ func (s *State) getLogRange(from, to int) []*LogEntry {
 	return s.pState.Logs[from:to]
 }
 
+// TODO refactor after using snapshot
 // The caller is responsible for ensuring the index is within bounds.
 func (s *State) getLogEntry(index int) *LogEntry {
 	return s.pState.Logs[index-1]
@@ -126,12 +140,21 @@ func (s *State) getSnapshot() *Snapshot {
 	return s.pState.Snapshot
 }
 
+// current first, not all the time
+func (s *State) firstLogEntry() (int, int) {
+	if s.logLen() == 0 {
+		return -1, -1
+	}
+	entry := s.pState.Logs[0]
+	return entry.Term, entry.Index
+}
+
 // if two entry equal, any entry before are equal too
 func (s *State) lastLogEntry() (int, int) {
 	n := s.logLen()
 	if n == 0 {
 		if snapshot := s.getSnapshot(); snapshot != nil {
-			return snapshot.LastValue, snapshot.LastValue
+			return snapshot.LastTerm, snapshot.LastTerm
 		}
 		return -1, -1
 	}
@@ -206,6 +229,11 @@ func (s *State) setNextIndex(server, index int, inc bool) {
 func (s *State) getNextIndex(server int) int {
 	return s.vState.nextIndex[server]
 }
+
+func (s *State) getCommitIndex() int {
+	return s.vState.commitIndex
+}
+
 func (s *State) setMatchIndex(server, index int) {
 	s.vState.setMatchIndex(server, index)
 }
@@ -246,4 +274,8 @@ func (s *State) deleteLastIndex(entries []*LogEntry) {
 	for _, entry := range entries {
 		delete(s.vState.lastIndexEachTerm, entry.Term)
 	}
+}
+
+func (s *State) installSnapshot(snap *Snapshot) {
+	s.pState.Snapshot = snap
 }

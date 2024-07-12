@@ -4,15 +4,79 @@ import (
 	"fmt"
 	"github.com/sirupsen/logrus"
 	"sync/atomic"
+	"time"
 )
 
 const (
 	minimumIndex = 1
 )
 
-type termLog struct {
-	Term  int
-	Index int
+func (l *Leader) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
+	return l.setState(rf, follower).replyAppendEntries(rf, args)
+}
+
+func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
+	oldTerm := rf.state.getTerm()
+	version := rf.state.version
+	log := logrus.WithFields(logrus.Fields{
+		"server":       rf.me,
+		"oldTerm":      oldTerm,
+		"newTerm":      args.Term,
+		"prevIndex":    args.PrevLogIndex,
+		"prevTerm":     args.PrevLogTerm,
+		"from":         args.From,
+		"leaderCommit": args.LeaderCommit,
+		"client":       args.LeaderId,
+		"entryLen":     len(args.Entries),
+	})
+	if oldTerm < args.Term {
+		rf.state.setTerm(args.Term)
+	}
+	var err error
+	if args.PrevLogIndex > 0 {
+		err = prevLogValidation(rf, args.PrevLogIndex, args.PrevLogTerm)
+	}
+	if err != nil {
+		log = log.WithField("reason", err)
+		return rf.refuseAppendEntries(log, args.PrevLogTerm)
+	}
+
+	defer func() {
+		rf.persistIfVersionMismatch(version)
+		// if commitIndex > lastApplied: increment lastApplied, apply
+		// log[lastApplied] to state machine
+		if rf.state.setCommitIndex(min(args.LeaderCommit, rf.state.logLen())) {
+			rf.updateLogState()
+			rf.makeSnapshot()
+		}
+	}()
+	entryLen := len(args.Entries)
+	if entryLen == 0 {
+		return rf.acceptAppendEntries(log)
+	}
+	// To prevent errors from requests with outdated parameters,
+	// validate them to avoid inadvertent deletion of already append logs.
+	lastEntry := args.Entries[entryLen-1]
+	if lastEntry.Index <= rf.state.logLen() && isLogEqual(lastEntry, rf.state.getLogEntry(lastEntry.Index)) {
+		return rf.acceptAppendEntries(log)
+	}
+	rf.state.deleteLastIndex(rf.state.getLogRange(args.PrevLogIndex+1, -1))
+	// append any entries in args
+	rf.state.pState.Logs = rf.state.getLogRange(1, args.PrevLogIndex)
+	rf.state.logAppend(args.Entries...)
+	// from could be bigger than to in fast sync request which entry is nil
+	from := args.PrevLogIndex + 1
+	to := rf.state.logLen()
+	log = log.WithFields(logrus.Fields{
+		"appendFrom": from,
+		"appendTo":   to,
+	})
+	rf.state.updateLastIndex(args.Entries...)
+	return rf.acceptAppendEntries(log)
+}
+
+func (c *Candidate) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
+	return c.setState(rf, follower).replyAppendEntries(rf, args)
 }
 
 type AppendEntriesArgs struct {
@@ -126,6 +190,7 @@ func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 	}
 	if update {
 		rf.updateLogState()
+		rf.makeSnapshot()
 	}
 	log.WithField("new", reply.prevLogIndex+reply.elemLength+1).Info("set next index when success")
 	rf.state.setNextIndex(server, reply.prevLogIndex+reply.elemLength+1, true)
@@ -182,4 +247,75 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 
 func handleFailure(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 	setNextIndexWhenFailure(rf, reply, log)
+}
+
+type logSyncEntry interface {
+	send(client *Raft, server int, from string)
+}
+
+type appendEntriesArg struct {
+	arg     *AppendEntriesArgs
+	version int
+}
+
+func (a *appendEntriesArg) send(client *Raft, server int, from string) {
+	client.sendAppendEntries(server, a, &AppendEntriesReply{}, nil, from)
+}
+
+func buildAppendArgs(rf *Raft, server int, from string) logSyncEntry {
+	defer recordElapse(time.Now(), "build append args", rf.me)
+	if server == rf.me {
+		return nil
+	}
+	nextIndex := rf.state.getNextIndex(server)
+	prevIndex := nextIndex - 1
+	if prevIndex < 0 {
+		logrus.Fatalf("invalid nextIndex: %v", rf.state.vState.nextIndex)
+	}
+	_, firstIndex := rf.state.firstLogEntry()
+	if prevIndex < firstIndex {
+		snapshot := rf.state.getSnapshot()
+		if snapshot == nil {
+			logrus.Fatalf("log missing")
+			return nil
+		}
+		return &InstallSnapshotReq{
+			Term:              rf.state.getTerm(),
+			LeaderId:          rf.me,
+			LastIncludedIndex: snapshot.LastIndex,
+			LastIncludedTerm:  snapshot.LastTerm,
+			Offset:            0,
+			Data:              snapshot.byte(),
+			Done:              true,
+		}
+	}
+	// nextIndex start from 1
+	cpLen := max(0, rf.state.logLen()-prevIndex)
+	var entries []*LogEntry
+	if cpLen > 0 {
+		entries = make([]*LogEntry, cpLen)
+		for i, item := range rf.state.getLogRange(nextIndex, -1) {
+			entries[i] = &LogEntry{
+				Term:  item.Term,
+				Index: item.Index,
+				Cmd:   item.Cmd,
+			}
+		}
+	}
+	var prevTerm int
+	if prevIndex == 0 {
+		prevTerm = 0
+	} else {
+		prevTerm = rf.state.getLogEntry(prevIndex).Term
+	}
+	arg := &AppendEntriesArgs{
+		Term:         rf.state.pState.CurrentTerm,
+		LeaderId:     rf.me,
+		PrevLogIndex: prevIndex,
+		PrevLogTerm:  prevTerm,
+		Entries:      entries,
+		LeaderCommit: rf.state.vState.commitIndex,
+		From:         from,
+	}
+	return &appendEntriesArg{arg: arg, version: rf.state.version}
 }

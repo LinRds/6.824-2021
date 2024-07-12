@@ -48,10 +48,6 @@ func (l *Leader) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 	return l.setState(rf, follower).replyVote(rf, args)
 }
 
-func (l *Leader) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
-	return l.setState(rf, follower).replyAppendEntries(rf, args)
-}
-
 func (l *Leader) setState(rf *Raft, id int) identity {
 	if id != follower {
 		logrus.Fatal("leader only can trans to follower")
@@ -65,7 +61,13 @@ func (l *Leader) getState() int {
 	return leader
 }
 
-type Follower struct{}
+type logIndex struct {
+	term  int
+	index int
+}
+type Follower struct {
+	tmpSnapshot map[logIndex][]byte
+}
 
 func RpcRefuse(term int) int64 {
 	return int64(pack(uint32(term), 0))
@@ -123,65 +125,6 @@ func prevLogValidation(rf *Raft, prevIndex, prevTerm int) error {
 	return nil
 }
 
-func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
-	oldTerm := rf.state.getTerm()
-	version := rf.state.version
-	log := logrus.WithFields(logrus.Fields{
-		"server":       rf.me,
-		"oldTerm":      oldTerm,
-		"newTerm":      args.Term,
-		"prevIndex":    args.PrevLogIndex,
-		"prevTerm":     args.PrevLogTerm,
-		"from":         args.From,
-		"leaderCommit": args.LeaderCommit,
-		"client":       args.LeaderId,
-		"entryLen":     len(args.Entries),
-	})
-	if oldTerm < args.Term {
-		rf.state.setTerm(args.Term)
-	}
-	var err error
-	if args.PrevLogIndex > 0 {
-		err = prevLogValidation(rf, args.PrevLogIndex, args.PrevLogTerm)
-	}
-	if err != nil {
-		log = log.WithField("reason", err)
-		return rf.refuseAppendEntries(log, args.PrevLogTerm)
-	}
-
-	defer func() {
-		rf.persistIfVersionMismatch(version)
-		// if commitIndex > lastApplied: increment lastApplied, apply
-		// log[lastApplied] to state machine
-		if rf.state.setCommitIndex(min(args.LeaderCommit, rf.state.logLen())) {
-			rf.updateLogState()
-		}
-	}()
-	entryLen := len(args.Entries)
-	if entryLen == 0 {
-		return rf.acceptAppendEntries(log)
-	}
-	// To prevent errors from requests with outdated parameters,
-	// validate them to avoid inadvertent deletion of already append logs.
-	lastEntry := args.Entries[entryLen-1]
-	if lastEntry.Index <= rf.state.logLen() && isLogEqual(lastEntry, rf.state.getLogEntry(lastEntry.Index)) {
-		return rf.acceptAppendEntries(log)
-	}
-	rf.state.deleteLastIndex(rf.state.getLogRange(args.PrevLogIndex+1, -1))
-	// append any entries in args
-	rf.state.pState.Logs = rf.state.getLogRange(1, args.PrevLogIndex)
-	rf.state.logAppend(args.Entries...)
-	// from could be bigger than to in fast sync request which entry is nil
-	from := args.PrevLogIndex + 1
-	to := rf.state.logLen()
-	log = log.WithFields(logrus.Fields{
-		"appendFrom": from,
-		"appendTo":   to,
-	})
-	rf.state.updateLastIndex(args.Entries...)
-	return rf.acceptAppendEntries(log)
-}
-
 func (f *Follower) setState(rf *Raft, id int) identity {
 	if id == leader {
 		logrus.Fatal("follower can not trans to leader directly")
@@ -214,10 +157,6 @@ func (c *Candidate) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 		return RpcRefuse(term)
 	}
 	return c.setState(rf, follower).replyVote(rf, args)
-}
-
-func (c *Candidate) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *AppendEntriesReply {
-	return c.setState(rf, follower).replyAppendEntries(rf, args)
 }
 
 func (c *Candidate) setState(rf *Raft, id int) identity {

@@ -46,7 +46,7 @@ func start(rf *Raft, cmd *startReq) {
 		if i == rf.me {
 			continue
 		}
-		arg := rf.buildAppendArgs(i, "start")
+		arg := buildAppendArgs(rf, i, "start")
 		go func(server int, arg *appendEntriesArg) {
 			rf.sendAppendEntries(server, arg, &AppendEntriesReply{}, nil, "start")
 		}(i, arg)
@@ -79,6 +79,7 @@ func handleVote(rf *Raft, res *RequestVoteReply) {
 		}
 	}
 }
+
 func heartbeat(rf *Raft) {
 	if !rf.isLeader() {
 		return
@@ -88,7 +89,7 @@ func heartbeat(rf *Raft) {
 		if i == rf.me {
 			continue
 		}
-		arg := rf.buildAppendArgs(i, "heartbeat")
+		arg := buildAppendArgs(rf, i, "heartbeat")
 		go func() {
 			reply := &AppendEntriesReply{}
 			rf.sendAppendEntries(i, arg, reply, nil, "heartbeat")
@@ -166,6 +167,24 @@ func handleAppendEntry(rf *Raft, re *appendEntryResult) {
 
 	// fast sync
 	// TODO avoid requests not necessary
-	arg := rf.buildAppendArgs(re.server, "fast sync")
+	arg := buildAppendArgs(rf, re.server, "fast sync")
 	go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")
+}
+
+func replyInstallSnapshot(rf *Raft, req *InstallSnapshotReq) {
+	myTerm := rf.state.getTerm()
+	if req.Term < myTerm {
+		rf.snapshotRepCh <- commonReply(myTerm)
+		return
+	}
+	rf.lastHeartbeatFromLeader = time.Now()
+	rf.snapshotRepCh <- rf.id.replyInstallSnapshot(rf, req)
+}
+
+func handleInstallSnapshot(rf *Raft, resp *InstallSnapshotResp) {
+	if !rf.isLeader() || resp.Term <= rf.state.getTerm() {
+		return
+	}
+	rf.state.setTerm(resp.Term)
+	rf.id.setState(rf, follower)
 }
