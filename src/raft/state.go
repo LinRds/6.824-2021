@@ -17,6 +17,10 @@ func (b bitMap) len() int {
 	return bits.OnesCount64(uint64(b))
 }
 
+type logSyncEntry interface {
+	send(client *Raft, server int, from string)
+}
+
 type LogEntry struct {
 	Term  int
 	Count bitMap
@@ -33,7 +37,7 @@ type Snapshot struct {
 func (s Snapshot) byte() []byte {
 	w := new(bytes.Buffer)
 	enc := labgob.NewEncoder(w)
-	if err := enc.Encode(&s); err != nil {
+	if err := enc.Encode(&s.Value); err != nil {
 		logrus.WithField("error", err).Fatal("encode failed")
 		return nil
 	}
@@ -118,8 +122,12 @@ type State struct {
 }
 
 // half open interval [from,to]
-// TODO refactor after using snapshot
 func (s *State) getLogRange(from, to int) []*LogEntry {
+	begin := s.getSnapshot().LastIndex
+	from -= begin
+	if to > 0 {
+		to -= begin
+	}
 	if from < 1 || (to != -1 && from > to) {
 		return nil
 	}
@@ -130,35 +138,67 @@ func (s *State) getLogRange(from, to int) []*LogEntry {
 	return s.pState.Logs[from:to]
 }
 
-// TODO refactor after using snapshot
 // The caller is responsible for ensuring the index is within bounds.
 func (s *State) getLogEntry(index int) *LogEntry {
+	oldIndex := index
+	snapshot := s.getSnapshot()
+	index -= snapshot.LastIndex
+	log := logrus.WithFields(logrus.Fields{
+		"index":         oldIndex,
+		"snapLastIndex": snapshot.LastIndex,
+	})
+	log.Info("get log entry")
+	if index < 1 {
+		return nil
+	}
+	entry := s.pState.Logs[index-1]
+	if entry.Index != oldIndex {
+		log.WithField("gotIndex", entry.Index).Fatal("log entry index not match")
+	}
 	return s.pState.Logs[index-1]
 }
 
+// still working when log stored in snapshot
+func (s *State) getPrevLogEntry(prevIndex int) *LogEntry {
+	entry := s.getLogEntry(prevIndex)
+	if entry != nil {
+		return entry
+	}
+	snapshot := s.getSnapshot()
+	if snapshot.LastIndex == prevIndex {
+		return &LogEntry{
+			Term:  snapshot.LastTerm,
+			Index: snapshot.LastIndex,
+			Cmd:   snapshot.Value,
+		}
+	}
+	return nil
+}
 func (s *State) getSnapshot() *Snapshot {
+	if s.pState.Snapshot == nil {
+		s.pState.Snapshot = &Snapshot{}
+	}
 	return s.pState.Snapshot
 }
 
 // current first, not all the time
-func (s *State) firstLogEntry() (int, int) {
-	if s.logLen() == 0 {
-		return -1, -1
+func (s *State) firstLogIndex() int {
+	if s.pureLogLen() == 0 {
+		snapshot := s.getSnapshot()
+		return snapshot.LastIndex + 1
 	}
 	entry := s.pState.Logs[0]
-	return entry.Term, entry.Index
+	return entry.Index
 }
 
 // if two entry equal, any entry before are equal too
 func (s *State) lastLogEntry() (int, int) {
 	n := s.logLen()
 	if n == 0 {
-		if snapshot := s.getSnapshot(); snapshot != nil {
-			return snapshot.LastTerm, snapshot.LastTerm
-		}
 		return -1, -1
 	}
-	lastEntry := s.getLogEntry(n)
+
+	lastEntry := s.getPrevLogEntry(n)
 	return lastEntry.Term, lastEntry.Index
 }
 
@@ -250,8 +290,12 @@ func (s *State) logAppend(entries ...*LogEntry) {
 	s.pState.Logs = append(s.pState.Logs, entries...)
 }
 
-func (s *State) logLen() int {
+func (s *State) pureLogLen() int {
 	return len(s.pState.Logs)
+}
+
+func (s *State) logLen() int {
+	return s.pureLogLen() + s.getSnapshot().LastIndex
 }
 
 func (s *State) fastIndex(term int) (int, int) {

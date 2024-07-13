@@ -87,6 +87,10 @@ func syncApply(applyCh chan ApplyMsg, cmd any, cmdIndex int) {
 	applyCh <- ApplyMsg{CommandValid: true, Command: cmd, CommandIndex: cmdIndex}
 }
 
+func syncSnapshot(applyCh chan ApplyMsg, snapshot []byte, snapshotTerm int, snapshotIndex int) {
+	applyCh <- ApplyMsg{SnapshotValid: true, Snapshot: snapshot, SnapshotTerm: snapshotTerm, SnapshotIndex: snapshotIndex}
+}
+
 type Vote struct {
 	VotedFor int
 	Voted    bool
@@ -128,6 +132,7 @@ type Raft struct {
 	startReqCh              chan *startReq
 	snapshotReqCh           chan *InstallSnapshotReq
 	snapshotRepCh           chan *InstallSnapshotResp
+	snapshotCh              chan *Snapshot
 }
 
 func (rf *Raft) saveRaceLeader(isLeader bool) {
@@ -150,6 +155,7 @@ func (rf *Raft) initChan() {
 	rf.startReqCh = make(chan *startReq, 10)
 	rf.snapshotReqCh = make(chan *InstallSnapshotReq)
 	rf.snapshotRepCh = make(chan *InstallSnapshotResp)
+	rf.snapshotCh = make(chan *Snapshot, 10)
 }
 
 type startReq struct {
@@ -184,20 +190,22 @@ func (rf *Raft) isCandidate() bool {
 
 // update commitIndex, lastApplied and sync to applyCh
 func (rf *Raft) updateLogState() {
-	logrus.WithFields(logrus.Fields{
+	log := logrus.WithFields(logrus.Fields{
 		"server": rf.me,
 		"from":   rf.state.vState.lastApplied + 1,
 		"to":     rf.state.vState.commitIndex,
-	}).Info("sync apply")
+	})
+	log.Info("sync apply")
 	for i := rf.state.vState.lastApplied; i < rf.state.vState.commitIndex; i++ {
 		if i > rf.state.vState.lastApplied {
 			// TODO apply log
 		}
-		if rf.state.pState.Logs[i] == nil {
+		entry := rf.state.getLogEntry(i + 1)
+		if entry == nil {
 			log.Fatalf("raft [%d] log state is nil", rf.me)
 		}
 		//log.Printf("server %d sync log, cmd is %v, term is %d and index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Term, rf.state.pState.Logs[i].Index)
-		syncApply(rf.applyCh, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Index)
+		syncApply(rf.applyCh, entry.Cmd, entry.Index)
 	}
 	rf.state.vState.lastApplied = rf.state.vState.commitIndex
 }
@@ -265,7 +273,6 @@ func (rf *Raft) persist() {
 	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
-	//log.Printf("server %d success persist, data len is %d", rf.me, len(data))
 }
 
 // restore previously persisted state.
@@ -309,11 +316,15 @@ func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int,
 func (rf *Raft) Snapshot(index int, snapshot []byte) {
 	// Your code here (2D).
 	decoder := labgob.NewDecoder(bytes.NewReader(snapshot))
-	if err := decoder.Decode(rf.state.getSnapshot()); err != nil {
-		logrus.Fatal(err)
+	var cmd int
+	if err := decoder.Decode(&cmd); err != nil {
+		panic(err)
 		return
 	}
-	rf.state.pState.Logs = rf.state.getLogRange(index+1, -1)
+	rf.snapshotCh <- &Snapshot{
+		LastIndex: index,
+		Value:     cmd,
+	}
 }
 
 func (rf *Raft) isMajority(num int) bool {
@@ -379,6 +390,8 @@ func (rf *Raft) killed() bool {
 }
 
 func (rf *Raft) makeSnapshot() {
+	return
+	defer recordElapse(time.Now(), "make snapshot", rf.me)
 	if len(rf.state.pState.Logs) < SnapShotInterval {
 		return
 	}
@@ -432,6 +445,8 @@ func (rf *Raft) ticker() {
 			replyInstallSnapshot(rf, snapshotReq)
 		case snapshotResp := <-rf.snapshotRepCh:
 			handleInstallSnapshot(rf, snapshotResp)
+		case snapshot := <-rf.snapshotCh:
+			installSnapshot(rf, snapshot)
 		default:
 			if rf.killed() {
 				return

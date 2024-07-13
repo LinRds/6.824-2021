@@ -114,11 +114,17 @@ func (f *Follower) replyVote(rf *Raft, args *RequestVoteArgs) int64 {
 
 func prevLogValidation(rf *Raft, prevIndex, prevTerm int) error {
 	if prevIndex > rf.state.logLen() {
+		logrus.WithFields(logrus.Fields{
+			"server":    rf.me,
+			"prevIndex": prevIndex,
+			"pureLen":   rf.state.pureLogLen(),
+			"len":       rf.state.logLen(),
+		}).Warn("log too short")
 		return errLogTooShort
 	}
 	// reply false if log doesn't contain an entry at prevLogIndex
 	// whose term matches prevLogTerm
-	prevItem := rf.state.getLogEntry(prevIndex)
+	prevItem := rf.state.getPrevLogEntry(prevIndex)
 	if prevItem == nil || prevItem.Term != prevTerm {
 		return errLogNotMatch
 	}

@@ -2,7 +2,7 @@ package raft
 
 import (
 	"bytes"
-	"log"
+	"github.com/sirupsen/logrus"
 )
 
 type InstallSnapshotReq struct {
@@ -20,23 +20,30 @@ func (i *InstallSnapshotReq) send(client *Raft, server int, from string) {
 }
 
 type InstallSnapshotResp struct {
-	Term int
+	Server    int
+	Term      int
+	LastIndex int
 }
 
-func commonReply(term int) *InstallSnapshotResp {
-	return &InstallSnapshotResp{term}
+func commonReply(server int, term int, lastIndex int) *InstallSnapshotResp {
+	return &InstallSnapshotResp{server, term, lastIndex}
 }
 
 func (l *Leader) replyInstallSnapshot(rf *Raft, args *InstallSnapshotReq) *InstallSnapshotResp {
 	myTerm := rf.state.getTerm()
-	if args.Term > myTerm {
+	if args.Term >= myTerm {
 		rf.state.setTerm(args.Term)
 		return l.setState(rf, follower).replyInstallSnapshot(rf, args)
 	}
-	return commonReply(myTerm)
+	return commonReply(rf.me, myTerm, -1)
 }
 
 func (f *Follower) replyInstallSnapshot(rf *Raft, args *InstallSnapshotReq) *InstallSnapshotResp {
+	log := logrus.WithFields(logrus.Fields{
+		"server": rf.me,
+		"client": args.LeaderId,
+	})
+	log.Info("reply install snapshot")
 	index := logIndex{args.LastIncludedTerm, args.LastIncludedIndex}
 	tmpSnap, ok := f.tmpSnapshot[index]
 	if !ok && args.Offset != 0 {
@@ -44,7 +51,7 @@ func (f *Follower) replyInstallSnapshot(rf *Raft, args *InstallSnapshotReq) *Ins
 	}
 	chunkSize := len(tmpSnap)
 	if chunkSize != args.Offset {
-		log.Fatal("chunk size mismatch")
+		log.Fatalf("chunk size mismatch, expected %d got %d", args.Offset, chunkSize)
 	}
 	if tmpSnap == nil {
 		tmpSnap = make([]byte, 0)
@@ -54,11 +61,17 @@ func (f *Follower) replyInstallSnapshot(rf *Raft, args *InstallSnapshotReq) *Ins
 	buf.Write(args.Data)
 	tmpSnap = buf.Bytes()
 	myTerm := rf.state.getTerm()
-	if args.Done && rf.CondInstallSnapshot(args.LastIncludedTerm, args.LastIncludedIndex, tmpSnap) {
-		rf.Snapshot(args.LastIncludedIndex, tmpSnap)
+	lastIndex := -1
+	if args.Done {
+		if rf.CondInstallSnapshot(args.LastIncludedTerm, args.LastIncludedIndex, tmpSnap) {
+			rf.Snapshot(args.LastIncludedIndex, tmpSnap)
+			lastIndex = args.LastIncludedIndex
+		}
 		delete(f.tmpSnapshot, index)
+	} else {
+		f.tmpSnapshot[index] = tmpSnap
 	}
-	return commonReply(myTerm)
+	return commonReply(rf.me, myTerm, lastIndex)
 }
 
 func (c *Candidate) replyInstallSnapshot(rf *Raft, args *InstallSnapshotReq) *InstallSnapshotResp {
@@ -67,7 +80,7 @@ func (c *Candidate) replyInstallSnapshot(rf *Raft, args *InstallSnapshotReq) *In
 		rf.state.setTerm(args.Term)
 		return c.setState(rf, follower).replyInstallSnapshot(rf, args)
 	}
-	return commonReply(myTerm)
+	return commonReply(rf.me, myTerm, -1)
 }
 
 func (rf *Raft) RequestInstallSnapshot(args *InstallSnapshotReq, reply *InstallSnapshotResp) {
@@ -80,7 +93,7 @@ func (rf *Raft) RequestInstallSnapshot(args *InstallSnapshotReq, reply *InstallS
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotReq, reply *InstallSnapshotResp) bool {
-	ok := rf.peers[server].Call("Raft.", args, reply, "")
+	ok := rf.peers[server].Call("Raft.RequestInstallSnapshot", args, reply, "")
 	if ok {
 		rf.snapshotRepCh <- reply
 	}

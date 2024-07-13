@@ -62,7 +62,7 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 	}
 	rf.state.deleteLastIndex(rf.state.getLogRange(args.PrevLogIndex+1, -1))
 	// append any entries in args
-	rf.state.pState.Logs = rf.state.getLogRange(1, args.PrevLogIndex)
+	rf.state.pState.Logs = rf.state.getLogRange(rf.state.getSnapshot().LastIndex+1, args.PrevLogIndex)
 	rf.state.logAppend(args.Entries...)
 	// from could be bigger than to in fast sync request which entry is nil
 	from := args.PrevLogIndex + 1
@@ -183,6 +183,9 @@ func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 	update := false
 	for i := reply.prevLogIndex + 1; i <= reply.prevLogIndex+reply.elemLength; i++ {
 		entry := rf.state.getLogEntry(i)
+		if entry == nil {
+			continue
+		}
 		entry.Count = entry.Count.add(reply.server)
 		if rf.isMajority(entry.Count.len()) && entry.Term == rf.state.getTerm() && rf.state.setCommitIndex(i) {
 			update = true
@@ -236,8 +239,8 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 	}
 	if fastIndex > 0 {
 		// safety validation
-		entry := rf.state.getLogEntry(fastIndex)
-		if entry.Term != fastTerm {
+		entry := rf.state.getPrevLogEntry(fastIndex)
+		if entry != nil && entry.Term != fastTerm {
 			log.Fatalf("expected fast term to be %d, got %d", fastTerm, entry.Term)
 		}
 	}
@@ -247,10 +250,6 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 
 func handleFailure(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 	setNextIndexWhenFailure(rf, reply, log)
-}
-
-type logSyncEntry interface {
-	send(client *Raft, server int, from string)
 }
 
 type appendEntriesArg struct {
@@ -272,8 +271,9 @@ func buildAppendArgs(rf *Raft, server int, from string) logSyncEntry {
 	if prevIndex < 0 {
 		logrus.Fatalf("invalid nextIndex: %v", rf.state.vState.nextIndex)
 	}
-	_, firstIndex := rf.state.firstLogEntry()
-	if prevIndex < firstIndex {
+	firstIndex := rf.state.firstLogIndex()
+	if prevIndex > 0 && prevIndex < firstIndex-1 {
+		logrus.Infof("prevIndex %d < firstIndex-1 %d", prevIndex, firstIndex-1)
 		snapshot := rf.state.getSnapshot()
 		if snapshot == nil {
 			logrus.Fatalf("log missing")
@@ -306,7 +306,7 @@ func buildAppendArgs(rf *Raft, server int, from string) logSyncEntry {
 	if prevIndex == 0 {
 		prevTerm = 0
 	} else {
-		prevTerm = rf.state.getLogEntry(prevIndex).Term
+		prevTerm = rf.state.getPrevLogEntry(prevIndex).Term
 	}
 	arg := &AppendEntriesArgs{
 		Term:         rf.state.pState.CurrentTerm,

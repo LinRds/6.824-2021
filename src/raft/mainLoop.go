@@ -47,8 +47,8 @@ func start(rf *Raft, cmd *startReq) {
 			continue
 		}
 		arg := buildAppendArgs(rf, i, "start")
-		go func(server int, arg *appendEntriesArg) {
-			rf.sendAppendEntries(server, arg, &AppendEntriesReply{}, nil, "start")
+		go func(server int, arg logSyncEntry) {
+			arg.send(rf, server, "start")
 		}(i, arg)
 	}
 }
@@ -57,7 +57,6 @@ func election(rf *Raft, timeOut int64) {
 	if rf.isLeader() {
 		return
 	}
-	defer recordElapse(time.Now(), "election", rf.me)
 	if time.Since(rf.lastHeartbeatFromLeader).Milliseconds() > timeOut {
 		rf.id.setState(rf, candidate)
 		rf.electionOnce(rf.state.getTerm())
@@ -84,16 +83,34 @@ func heartbeat(rf *Raft) {
 	if !rf.isLeader() {
 		return
 	}
-	defer recordElapse(time.Now(), "heartbeat", rf.me)
+	//defer recordElapse(time.Now(), "heartbeat", rf.me)
 	for i := 0; i < len(rf.peers); i++ {
 		if i == rf.me {
 			continue
 		}
 		arg := buildAppendArgs(rf, i, "heartbeat")
-		go func() {
-			reply := &AppendEntriesReply{}
-			rf.sendAppendEntries(i, arg, reply, nil, "heartbeat")
-		}()
+		if arg == nil {
+			logrus.WithFields(logrus.Fields{
+				"server": rf.me,
+				"client": i,
+			}).Warn("nil arg")
+		}
+		from := "heartbeat"
+		_, ok := arg.(*InstallSnapshotReq)
+		if ok {
+			from += "-snapshot"
+		}
+		_, ok = arg.(*appendEntriesArg)
+		if ok {
+			from += "-appendEntry"
+		}
+		logrus.WithFields(logrus.Fields{
+			"server": rf.me,
+			"client": i,
+		}).Info(from)
+		go func(arg logSyncEntry) {
+			arg.send(rf, i, from)
+		}(arg)
 	}
 }
 
@@ -168,13 +185,20 @@ func handleAppendEntry(rf *Raft, re *appendEntryResult) {
 	// fast sync
 	// TODO avoid requests not necessary
 	arg := buildAppendArgs(rf, re.server, "fast sync")
-	go rf.sendAppendEntries(re.server, arg, &AppendEntriesReply{}, nil, "handleAppendEntry")
+	go arg.send(rf, re.server, "fast sync")
 }
 
 func replyInstallSnapshot(rf *Raft, req *InstallSnapshotReq) {
 	myTerm := rf.state.getTerm()
+	log := logrus.WithFields(logrus.Fields{
+		"server":    rf.me,
+		"client":    req.LeaderId,
+		"myTerm":    myTerm,
+		"otherTerm": req.Term,
+	})
 	if req.Term < myTerm {
-		rf.snapshotRepCh <- commonReply(myTerm)
+		log.Warn("replyInstallSnapshot: term too low")
+		rf.snapshotRepCh <- commonReply(rf.me, myTerm, -1)
 		return
 	}
 	rf.lastHeartbeatFromLeader = time.Now()
@@ -182,9 +206,31 @@ func replyInstallSnapshot(rf *Raft, req *InstallSnapshotReq) {
 }
 
 func handleInstallSnapshot(rf *Raft, resp *InstallSnapshotResp) {
-	if !rf.isLeader() || resp.Term <= rf.state.getTerm() {
+	if resp.Term > rf.state.getTerm() {
+		rf.state.setTerm(resp.Term)
+		rf.id.setState(rf, follower)
 		return
 	}
-	rf.state.setTerm(resp.Term)
-	rf.id.setState(rf, follower)
+	if !rf.isLeader() {
+		return
+	}
+	if resp.LastIndex != -1 {
+		rf.state.setNextIndex(rf.me, resp.LastIndex+1, true)
+	}
+}
+
+func installSnapshot(rf *Raft, snapshot *Snapshot) {
+	logrus.WithFields(logrus.Fields{
+		"server":    rf.me,
+		"lastIndex": snapshot.LastIndex,
+		"logLen":    rf.state.logLen(),
+	}).Info("install snapshot")
+	entry := rf.state.getLogEntry(snapshot.LastIndex)
+	if entry == nil {
+		logrus.Warn("mismatch snapshot, fail to install")
+		return
+	}
+	rf.state.pState.Logs = rf.state.getLogRange(snapshot.LastIndex+1, -1)
+	snapshot.LastTerm = entry.Term
+	rf.state.installSnapshot(snapshot)
 }
