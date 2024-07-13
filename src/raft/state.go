@@ -104,11 +104,13 @@ func (vs *volatileState) init(n int, lastIndex int) {
 	vs.matchIndex = make([]int, n)
 }
 
-func (vs *volatileState) setNextIndex(server, index int, inc bool) {
+func (vs *volatileState) setNextIndex(server, index int, inc bool) bool {
 	if inc && vs.nextIndex[server] >= index {
-		return
+		return false
 	}
+	set := vs.nextIndex[server] == index
 	vs.nextIndex[server] = index
+	return set
 }
 
 func (vs *volatileState) setMatchIndex(server, index int) {
@@ -262,8 +264,8 @@ func (s *State) setTerm(term int) {
 	s.pState.Vote = nil
 }
 
-func (s *State) setNextIndex(server, index int, inc bool) {
-	s.vState.setNextIndex(server, index, inc)
+func (s *State) setNextIndex(server, index int, inc bool) bool {
+	return s.vState.setNextIndex(server, index, inc)
 }
 
 func (s *State) getNextIndex(server int) int {

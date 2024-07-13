@@ -176,16 +176,19 @@ func handleAppendEntry(rf *Raft, re *appendEntryResult) {
 		log.Warn("receive reply from old term")
 		return
 	}
+	var set bool
 	if success {
-		handleSuccess(rf, re, log)
+		set = handleSuccess(rf, re, log)
 	} else {
-		handleFailure(rf, re, log)
+		set = handleFailure(rf, re, log)
 	}
 
 	// fast sync
 	// TODO avoid requests not necessary
-	arg := buildAppendArgs(rf, re.server, "fast sync")
-	go arg.send(rf, re.server, "fast sync")
+	if set {
+		arg := buildAppendArgs(rf, re.server, "fast sync")
+		go arg.send(rf, re.server, "fast sync")
+	}
 }
 
 func replyInstallSnapshot(rf *Raft, req *InstallSnapshotReq) {
@@ -214,8 +217,13 @@ func handleInstallSnapshot(rf *Raft, resp *InstallSnapshotResp) {
 	if !rf.isLeader() {
 		return
 	}
+	var set bool
 	if resp.LastIndex != -1 {
-		rf.state.setNextIndex(rf.me, resp.LastIndex+1, true)
+		set = rf.state.setNextIndex(resp.Server, resp.LastIndex+1, true)
+	}
+	if set {
+		arg := buildAppendArgs(rf, resp.Server, "fast sync(snapshot)")
+		go arg.send(rf, resp.Server, "fast sync(snapshot)")
 	}
 }
 

@@ -171,7 +171,7 @@ func versionNotMatch(v1, v2 int) string {
 	return fmt.Sprintf("version not match, expected %d, got %d", v1, v2)
 }
 
-func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
+func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) bool {
 	server := reply.server
 	log = log.WithFields(logrus.Fields{
 		"server":    rf.me,
@@ -196,11 +196,11 @@ func handleSuccess(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
 		rf.makeSnapshot()
 	}
 	log.WithField("new", reply.prevLogIndex+reply.elemLength+1).Info("set next index when success")
-	rf.state.setNextIndex(server, reply.prevLogIndex+reply.elemLength+1, true)
 	rf.state.setMatchIndex(server, max(rf.state.getMatchIndex(server), reply.prevLogIndex+reply.elemLength))
+	return rf.state.setNextIndex(server, reply.prevLogIndex+reply.elemLength+1, true)
 }
 
-func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry) {
+func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry) bool {
 	fastTerm, fastIndex := re.reply.FastTerm, re.reply.FastIndex
 	if fastIndex < 0 {
 		log.Fatalf("fastIndex %d of server %d is negative", fastIndex, re.server)
@@ -245,11 +245,11 @@ func setNextIndexWhenFailure(rf *Raft, re *appendEntryResult, log *logrus.Entry)
 		}
 	}
 	log.WithField("new", fastIndex+1).Warn("set next index when failure")
-	rf.state.setNextIndex(server, fastIndex+1, false)
+	return rf.state.setNextIndex(server, fastIndex+1, false)
 }
 
-func handleFailure(rf *Raft, reply *appendEntryResult, log *logrus.Entry) {
-	setNextIndexWhenFailure(rf, reply, log)
+func handleFailure(rf *Raft, reply *appendEntryResult, log *logrus.Entry) bool {
+	return setNextIndexWhenFailure(rf, reply, log)
 }
 
 type appendEntriesArg struct {
