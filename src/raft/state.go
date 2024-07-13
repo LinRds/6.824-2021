@@ -163,7 +163,7 @@ func (s *State) getLogEntry(index int) *LogEntry {
 	})
 	log.Info("get log entry")
 	index -= 1
-	if index < 0 || index > len(s.pState.Logs) {
+	if index < 0 || index >= len(s.pState.Logs) {
 		log.Warnf("index %d invalid", index)
 		return nil
 	}
@@ -343,8 +343,7 @@ func (s *State) deleteLastIndex(entries []*LogEntry) {
 }
 
 func (s *State) installSnapshot(rf *Raft, snap *Snapshot) {
-	// sync before setting to avoid snap change after sync
-	syncSnapshot(rf.applyCh, snap.byte(), snap.LastTerm, snap.LastIndex)
 	s.setSnapshot(snap)
+	syncSnapshot(rf.applyCh, snap.byte(), snap.LastTerm, snap.LastIndex)
 	rf.state.vState.lastApplied = max(rf.state.vState.lastApplied, snap.LastIndex)
 }
