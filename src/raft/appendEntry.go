@@ -258,6 +258,13 @@ type appendEntriesArg struct {
 }
 
 func (a *appendEntriesArg) send(client *Raft, server int, from string) {
+	if a.arg.Entries == nil {
+		logrus.WithFields(logrus.Fields{
+			"server": server,
+			"client": client.me,
+			"from":   from,
+		}).Warn("nil arg")
+	}
 	client.sendAppendEntries(server, a, &AppendEntriesReply{}, nil, from)
 }
 
@@ -272,10 +279,14 @@ func buildAppendArgs(rf *Raft, server int, from string) logSyncEntry {
 		logrus.Fatalf("invalid nextIndex: %v", rf.state.vState.nextIndex)
 	}
 	firstIndex := rf.state.firstLogIndex()
-	if prevIndex > 0 && prevIndex < firstIndex-1 {
-		logrus.Infof("prevIndex %d < firstIndex-1 %d", prevIndex, firstIndex-1)
+	if prevIndex < firstIndex-1 {
+		logrus.WithFields(logrus.Fields{
+			"server": rf.me,
+			"client": server,
+			"from":   from,
+		}).Infof("prevIndex %d < firstIndex-1 %d", prevIndex, firstIndex-1)
 		snapshot := rf.state.getSnapshot()
-		if snapshot == nil {
+		if snapshot.LastIndex != firstIndex-1 {
 			logrus.Fatalf("log missing")
 			return nil
 		}
@@ -291,10 +302,17 @@ func buildAppendArgs(rf *Raft, server int, from string) logSyncEntry {
 	}
 	// nextIndex start from 1
 	cpLen := max(0, rf.state.logLen()-prevIndex)
-	var entries []*LogEntry
+	entries := make([]*LogEntry, cpLen)
 	if cpLen > 0 {
-		entries = make([]*LogEntry, cpLen)
-		for i, item := range rf.state.getLogRange(nextIndex, -1) {
+		logs := rf.state.getLogRange(nextIndex, -1)
+		if len(logs) < cpLen {
+			logrus.WithFields(logrus.Fields{
+				"purLen":    rf.state.pureLogLen(),
+				"len":       rf.state.logLen(),
+				"nextIndex": nextIndex,
+			}).Warn("log len not enough")
+		}
+		for i, item := range logs {
 			entries[i] = &LogEntry{
 				Term:  item.Term,
 				Index: item.Index,

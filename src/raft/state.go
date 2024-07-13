@@ -5,6 +5,7 @@ import (
 	"github.com/LinRds/raft/labgob"
 	"github.com/sirupsen/logrus"
 	"math/bits"
+	"sync"
 )
 
 type bitMap uint64
@@ -37,7 +38,7 @@ type Snapshot struct {
 func (s Snapshot) byte() []byte {
 	w := new(bytes.Buffer)
 	enc := labgob.NewEncoder(w)
-	if err := enc.Encode(&s.Value); err != nil {
+	if err := enc.Encode(s.Value); err != nil {
 		logrus.WithField("error", err).Fatal("encode failed")
 		return nil
 	}
@@ -52,10 +53,20 @@ type PersistentState struct {
 	Snapshot    *Snapshot
 }
 
-func (ps *PersistentState) copy() *PersistentState {
-	return &PersistentState{
-		CurrentTerm: ps.CurrentTerm,
+func (ps *PersistentState) deepCopy() *PersistentState {
+	w := new(bytes.Buffer)
+	encoder := labgob.NewEncoder(w)
+	if err := encoder.Encode(ps); err != nil {
+		logrus.WithField("error", err).Fatal("persistentState encode failed")
+		return nil
 	}
+	backup := new(PersistentState)
+	decoder := labgob.NewDecoder(w)
+	if err := decoder.Decode(backup); err != nil {
+		logrus.WithField("error", err).Fatal("persistentState decode failed")
+		return nil
+	}
+	return backup
 }
 
 type volatileState struct {
@@ -119,6 +130,7 @@ func (vs *volatileState) setMatchIndex(server, index int) {
 
 type State struct {
 	version int
+	snapMu  sync.RWMutex
 	pState  *PersistentState
 	vState  *volatileState
 }
@@ -150,14 +162,16 @@ func (s *State) getLogEntry(index int) *LogEntry {
 		"snapLastIndex": snapshot.LastIndex,
 	})
 	log.Info("get log entry")
-	if index < 1 {
+	index -= 1
+	if index < 0 || index > len(s.pState.Logs) {
+		log.Warnf("index %d invalid", index)
 		return nil
 	}
-	entry := s.pState.Logs[index-1]
+	entry := s.pState.Logs[index]
 	if entry.Index != oldIndex {
 		log.WithField("gotIndex", entry.Index).Fatal("log entry index not match")
 	}
-	return s.pState.Logs[index-1]
+	return s.pState.Logs[index]
 }
 
 // still working when log stored in snapshot
@@ -177,10 +191,15 @@ func (s *State) getPrevLogEntry(prevIndex int) *LogEntry {
 	return nil
 }
 func (s *State) getSnapshot() *Snapshot {
-	if s.pState.Snapshot == nil {
-		s.pState.Snapshot = &Snapshot{}
-	}
+	s.snapMu.RLock()
+	defer s.snapMu.RUnlock()
 	return s.pState.Snapshot
+}
+
+func (s *State) setSnapshot(snap *Snapshot) {
+	s.snapMu.Lock()
+	defer s.snapMu.Unlock()
+	s.pState.Snapshot = snap
 }
 
 // current first, not all the time
@@ -233,6 +252,7 @@ func (s *State) init() {
 		CurrentTerm: 1,
 		Vote:        new(Vote),
 		Logs:        make([]*LogEntry, 0, 10),
+		Snapshot:    new(Snapshot),
 	}
 	s.version = 1
 	s.vState = new(volatileState)
@@ -322,6 +342,9 @@ func (s *State) deleteLastIndex(entries []*LogEntry) {
 	}
 }
 
-func (s *State) installSnapshot(snap *Snapshot) {
-	s.pState.Snapshot = snap
+func (s *State) installSnapshot(rf *Raft, snap *Snapshot) {
+	// sync before setting to avoid snap change after sync
+	syncSnapshot(rf.applyCh, snap.byte(), snap.LastTerm, snap.LastIndex)
+	s.setSnapshot(snap)
+	rf.state.vState.lastApplied = max(rf.state.vState.lastApplied, snap.LastIndex)
 }

@@ -8,7 +8,10 @@ package raft
 // test with the original before submitting.
 //
 
-import "github.com/LinRds/raft/labgob"
+import (
+	"github.com/LinRds/raft/labgob"
+	"github.com/sirupsen/logrus"
+)
 import "github.com/LinRds/raft/labrpc"
 import "bytes"
 import "log"
@@ -186,6 +189,10 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			cfg.mu.Lock()
 			if cfg.rafts[i].CondInstallSnapshot(m.SnapshotTerm,
 				m.SnapshotIndex, m.Snapshot) {
+				logrus.WithFields(logrus.Fields{
+					"server":        i,
+					"snapShotIndex": m.SnapshotIndex,
+				}).Warn("InstallSnapshot")
 				cfg.logs[i] = make(map[int]interface{})
 				r := bytes.NewBuffer(m.Snapshot)
 				d := labgob.NewDecoder(r)
@@ -203,6 +210,7 @@ func (cfg *config) applierSnap(i int, applyCh chan ApplyMsg) {
 			err_msg, prevok := cfg.checkLogs(i, m)
 			cfg.mu.Unlock()
 			if m.CommandIndex > 1 && prevok == false {
+				logrus.Warnf("out of order: %v\n", cfg.logs[i])
 				err_msg = fmt.Sprintf("server %v apply out of order %v", i, m.CommandIndex)
 			}
 			if err_msg != "" {

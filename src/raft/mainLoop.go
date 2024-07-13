@@ -219,6 +219,11 @@ func handleInstallSnapshot(rf *Raft, resp *InstallSnapshotResp) {
 	}
 	var set bool
 	if resp.LastIndex != -1 {
+		logrus.WithFields(logrus.Fields{
+			"server": rf.me,
+			"client": resp.Server,
+			"new":    resp.LastIndex + 1,
+		}).Infof("set next index when snapshot")
 		set = rf.state.setNextIndex(resp.Server, resp.LastIndex+1, true)
 	}
 	if set {
@@ -227,18 +232,30 @@ func handleInstallSnapshot(rf *Raft, resp *InstallSnapshotResp) {
 	}
 }
 
+func condInstallSnapshot(rf *Raft, snapshot *Snapshot) bool {
+	lastIncludedTerm := snapshot.LastTerm
+	lastIncludedIndex := snapshot.LastIndex
+	curSnapshot := rf.state.getSnapshot()
+	return lastIncludedTerm == curSnapshot.LastTerm && lastIncludedIndex == curSnapshot.LastIndex
+}
 func installSnapshot(rf *Raft, snapshot *Snapshot) {
 	logrus.WithFields(logrus.Fields{
-		"server":    rf.me,
-		"lastIndex": snapshot.LastIndex,
-		"logLen":    rf.state.logLen(),
+		"server":            rf.me,
+		"lastIncludedIndex": snapshot.LastIndex,
+		"logLen":            rf.state.logLen(),
 	}).Info("install snapshot")
-	entry := rf.state.getLogEntry(snapshot.LastIndex)
-	if entry == nil {
-		logrus.Warn("mismatch snapshot, fail to install")
-		return
+	lastIncludedIndex := snapshot.LastIndex
+	entry := rf.state.getLogEntry(lastIncludedIndex)
+	if snapshot.LastTerm == 0 && entry != nil {
+		snapshot.LastTerm = entry.Term
 	}
-	rf.state.pState.Logs = rf.state.getLogRange(snapshot.LastIndex+1, -1)
-	snapshot.LastTerm = entry.Term
-	rf.state.installSnapshot(snapshot)
+	if snapshot.LastTerm == 0 {
+		panic("snapshot's term can't be zero")
+	}
+	// remove all logs before snapshot.LastIndex
+	_, lastIndex := rf.state.lastLogEntry()
+	lastIndex = min(lastIndex, lastIncludedIndex)
+	rf.state.pState.Logs = rf.state.getLogRange(lastIndex+1, -1)
+
+	rf.state.installSnapshot(rf, snapshot)
 }

@@ -2,6 +2,7 @@ package raft
 
 import (
 	"bytes"
+	"github.com/LinRds/raft/labgob"
 	"github.com/sirupsen/logrus"
 )
 
@@ -63,11 +64,11 @@ func (f *Follower) replyInstallSnapshot(rf *Raft, args *InstallSnapshotReq) *Ins
 	myTerm := rf.state.getTerm()
 	lastIndex := -1
 	if args.Done {
-		if rf.CondInstallSnapshot(args.LastIncludedTerm, args.LastIncludedIndex, tmpSnap) {
-			rf.Snapshot(args.LastIncludedIndex, tmpSnap)
+		delete(f.tmpSnapshot, index)
+		if rf.canInstall(args.LastIncludedTerm, args.LastIncludedIndex) {
+			installSnapshot(rf, newSnapshot(args.LastIncludedTerm, args.LastIncludedIndex, tmpSnap))
 			lastIndex = args.LastIncludedIndex
 		}
-		delete(f.tmpSnapshot, index)
 	} else {
 		f.tmpSnapshot[index] = tmpSnap
 	}
@@ -90,6 +91,8 @@ func (rf *Raft) RequestInstallSnapshot(args *InstallSnapshotReq, reply *InstallS
 	rf.snapshotReqCh <- args
 	rep := <-rf.snapshotRepCh
 	reply.Term = rep.Term
+	reply.LastIndex = rep.LastIndex
+	reply.Server = rep.Server
 }
 
 func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotReq, reply *InstallSnapshotResp) bool {
@@ -98,4 +101,18 @@ func (rf *Raft) sendInstallSnapshot(server int, args *InstallSnapshotReq, reply 
 		rf.snapshotRepCh <- reply
 	}
 	return ok
+}
+
+func newSnapshot(term, index int, data []byte) *Snapshot {
+	var cmd int
+	decoder := labgob.NewDecoder(bytes.NewBuffer(data))
+	if err := decoder.Decode(&cmd); err != nil {
+		logrus.Error(err)
+		return nil
+	}
+	return &Snapshot{
+		LastIndex: index,
+		LastTerm:  term,
+		Value:     cmd,
+	}
 }

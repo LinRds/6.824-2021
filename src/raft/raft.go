@@ -22,10 +22,12 @@ import (
 	"github.com/LinRds/raft/labgob"
 	nested "github.com/antonfisher/nested-logrus-formatter"
 	"github.com/sirupsen/logrus"
-	"log"
 	"math/rand"
+	"net/http"
 	_ "net/http/pprof"
 	"os"
+	"runtime"
+
 	//	"bytes"
 	"sync"
 	"sync/atomic"
@@ -36,8 +38,8 @@ import (
 )
 
 func init() {
-	//runtime.SetBlockProfileRate(1)
-	//go http.ListenAndServe("localhost:6060", nil)
+	runtime.SetBlockProfileRate(1)
+	go http.ListenAndServe("localhost:6060", nil)
 	outPutToFile := len(os.Getenv("OUT_PUT_TO_FILE")) > 0
 	noColor := false
 	if outPutToFile {
@@ -133,6 +135,7 @@ type Raft struct {
 	snapshotReqCh           chan *InstallSnapshotReq
 	snapshotRepCh           chan *InstallSnapshotResp
 	snapshotCh              chan *Snapshot
+	condInstallCh           chan *snapshotWithReply
 }
 
 func (rf *Raft) saveRaceLeader(isLeader bool) {
@@ -156,6 +159,7 @@ func (rf *Raft) initChan() {
 	rf.snapshotReqCh = make(chan *InstallSnapshotReq)
 	rf.snapshotRepCh = make(chan *InstallSnapshotResp)
 	rf.snapshotCh = make(chan *Snapshot, 10)
+	rf.condInstallCh = make(chan *snapshotWithReply, 10)
 }
 
 type startReq struct {
@@ -205,7 +209,12 @@ func (rf *Raft) updateLogState() {
 			log.Fatalf("raft [%d] log state is nil", rf.me)
 		}
 		//log.Printf("server %d sync log, cmd is %v, term is %d and index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Term, rf.state.pState.Logs[i].Index)
-		syncApply(rf.applyCh, entry.Cmd, entry.Index)
+		if (entry.Index+1)%SnapShotInterval == 0 {
+			snapshot := newSnapshot(entry.Term, entry.Index, cmdEncode(entry.Cmd))
+			installSnapshot(rf, snapshot)
+		} else {
+			syncApply(rf.applyCh, entry.Cmd, entry.Index)
+		}
 	}
 	rf.state.vState.lastApplied = rf.state.vState.commitIndex
 }
@@ -269,7 +278,7 @@ func (rf *Raft) persist() {
 	e := labgob.NewEncoder(w)
 	err := e.Encode(rf.state.pState)
 	if err != nil {
-		log.Fatal(err)
+		logrus.Fatal(err)
 	}
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
@@ -286,9 +295,14 @@ func (rf *Raft) readPersist(data []byte) {
 	d := labgob.NewDecoder(r)
 	var pState PersistentState
 	if err := d.Decode(&pState); err != nil {
-		log.Fatal(err)
+		logrus.Fatal(err)
 	}
 	rf.state.pState = &pState
+}
+
+type snapshotWithReply struct {
+	*Snapshot
+	reply chan bool
 }
 
 // CondInstallSnapshot A service wants to switch to snapshot.  Only do so if Raft hasn't
@@ -296,16 +310,24 @@ func (rf *Raft) readPersist(data []byte) {
 func (rf *Raft) CondInstallSnapshot(lastIncludedTerm int, lastIncludedIndex int, snapshot []byte) bool {
 
 	// Your code here (2D).
-	var snap Snapshot
-	dec := labgob.NewDecoder(bytes.NewReader(snapshot))
-	if err := dec.Decode(&snap); err != nil {
-		return false
-	}
+	log := logrus.WithFields(logrus.Fields{
+		"server":            rf.me,
+		"lastIncludedTerm":  lastIncludedTerm,
+		"lastIncludedIndex": lastIncludedIndex,
+	})
+	log.Info("cond install prevIndex")
+	return condInstallSnapshot(rf, newSnapshot(lastIncludedTerm, lastIncludedIndex, snapshot))
+}
+
+func (rf *Raft) canInstall(lastIncludedTerm int, lastIncludedIndex int) bool {
 	lastTerm, lastIndex := rf.state.lastLogEntry()
 	if lastTerm > lastIncludedTerm || lastIndex > lastIncludedIndex {
+		logrus.WithFields(logrus.Fields{
+			"lastTerm":  lastTerm,
+			"lastIndex": lastIndex,
+		}).Warn("can't install snapshot")
 		return false
 	}
-	//rf.state.installSnapshot(&snap)
 	return true
 }
 
