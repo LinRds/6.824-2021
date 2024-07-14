@@ -142,7 +142,7 @@ func (s *State) getLogRange(from, to int) []*LogEntry {
 	if to > 0 {
 		to -= begin
 	}
-	if from < 1 || (to != -1 && from > to) {
+	if from < 1 || (to != -1 && from > to) || from > s.pureLogLen() {
 		return nil
 	}
 	from -= 1
@@ -232,6 +232,15 @@ func (s *State) setCommitIndex(index int) bool {
 	return set
 }
 
+func (s *State) setLastApplied(index int) bool {
+	logrus.WithField("value", index).WithField("curValue", s.vState.lastApplied).Info("try to set lastApplied")
+	set := false
+	if s.vState.lastApplied < index {
+		s.vState.lastApplied = index
+		set = true
+	}
+	return set
+}
 func (s *State) isVoted() bool {
 	if s.pState.Vote == nil {
 		return false
@@ -310,6 +319,7 @@ func (s *State) logAppend(entries ...*LogEntry) {
 		s.version++
 	}
 	s.pState.Logs = append(s.pState.Logs, entries...)
+	s.updateLastIndex(entries...)
 }
 
 func (s *State) pureLogLen() int {
@@ -343,7 +353,11 @@ func (s *State) deleteLastIndex(entries []*LogEntry) {
 }
 
 func (s *State) installSnapshot(rf *Raft, snap *Snapshot) {
+	// remove all logs before snapshot.LastIndex
+	rf.state.pState.Logs = rf.state.getLogRange(snap.LastIndex+1, -1)
 	s.setSnapshot(snap)
+	rf.persist()
 	syncSnapshot(rf.applyCh, snap.byte(), snap.LastTerm, snap.LastIndex)
-	rf.state.vState.lastApplied = max(rf.state.vState.lastApplied, snap.LastIndex)
+	rf.state.setLastApplied(snap.LastIndex)
+	rf.state.setCommitIndex(snap.LastIndex)
 }

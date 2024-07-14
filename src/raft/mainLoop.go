@@ -39,7 +39,6 @@ func start(rf *Raft, cmd *startReq) {
 		"cmd":   cmd.cmd,
 	}).Info("leader append log in Start")
 	rf.state.logAppend(entry)
-	rf.state.updateLastIndex(entry)
 	rf.persistIfVersionMismatch(version)
 	repCh <- &startRes{index: index, term: term, isLeader: true, begin: begin, end: time.Now()}
 	for i := 0; i < len(rf.peers); i++ {
@@ -252,10 +251,6 @@ func installSnapshot(rf *Raft, snapshot *Snapshot) {
 	if snapshot.LastTerm == 0 {
 		panic("snapshot's term can't be zero")
 	}
-	// remove all logs before snapshot.LastIndex
-	_, lastIndex := rf.state.lastLogEntry()
-	lastIndex = min(lastIndex, lastIncludedIndex)
-	rf.state.pState.Logs = rf.state.getLogRange(lastIndex+1, -1)
 
 	rf.state.installSnapshot(rf, snapshot)
 }

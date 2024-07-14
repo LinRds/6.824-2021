@@ -206,7 +206,8 @@ func (rf *Raft) updateLogState() {
 		}
 		entry := rf.state.getLogEntry(i + 1)
 		if entry == nil {
-			log.Fatalf("raft [%d] log state is nil", rf.me)
+			log.Warn("raft  log state is nil")
+			continue
 		}
 		//log.Printf("server %d sync log, cmd is %v, term is %d and index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Term, rf.state.pState.Logs[i].Index)
 		if (entry.Index+1)%SnapShotInterval == 0 {
@@ -216,7 +217,7 @@ func (rf *Raft) updateLogState() {
 			syncApply(rf.applyCh, entry.Cmd, entry.Index)
 		}
 	}
-	rf.state.vState.lastApplied = rf.state.vState.commitIndex
+	rf.state.setLastApplied(rf.state.getCommitIndex())
 }
 
 // LogControllerLoop deprecated
@@ -298,6 +299,10 @@ func (rf *Raft) readPersist(data []byte) {
 		logrus.Fatal(err)
 	}
 	rf.state.pState = &pState
+	lastIndex := rf.state.getSnapshot().LastIndex
+	logrus.WithField("lastIndex", lastIndex).Info("read persist")
+	rf.state.setCommitIndex(lastIndex)
+	rf.state.setLastApplied(lastIndex)
 }
 
 type snapshotWithReply struct {

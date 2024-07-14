@@ -71,7 +71,6 @@ func (f *Follower) replyAppendEntries(rf *Raft, args *AppendEntriesArgs) *Append
 		"appendFrom": from,
 		"appendTo":   to,
 	})
-	rf.state.updateLastIndex(args.Entries...)
 	return rf.acceptAppendEntries(log)
 }
 
