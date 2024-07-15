@@ -90,7 +90,15 @@ func syncApply(applyCh chan ApplyMsg, cmd any, cmdIndex int) {
 }
 
 func syncSnapshot(applyCh chan ApplyMsg, snapshot []byte, snapshotTerm int, snapshotIndex int) {
-	applyCh <- ApplyMsg{SnapshotValid: true, Snapshot: snapshot, SnapshotTerm: snapshotTerm, SnapshotIndex: snapshotIndex}
+	applyCh <- ApplyMsg{
+		SnapshotValid: true,
+		Snapshot:      snapshot,
+		SnapshotTerm:  snapshotTerm,
+		SnapshotIndex: snapshotIndex,
+		CommandValid:  true,
+		CommandIndex:  snapshotIndex,
+		Command:       cmdDecode(snapshot),
+	}
 }
 
 type Vote struct {
@@ -209,32 +217,16 @@ func (rf *Raft) updateLogState() {
 			log.Warn("raft  log state is nil")
 			continue
 		}
-		//log.Printf("server %d sync log, cmd is %v, term is %d and index is %d", rf.me, rf.state.pState.Logs[i].Cmd, rf.state.pState.Logs[i].Term, rf.state.pState.Logs[i].Index)
-		if (entry.Index+1)%SnapShotInterval == 0 {
-			snapshot := newSnapshot(entry.Term, entry.Index, cmdEncode(entry.Cmd))
-			installSnapshot(rf, snapshot)
-		} else {
-			syncApply(rf.applyCh, entry.Cmd, entry.Index)
-		}
+		//if (entry.Index+1)%SnapShotInterval == 0 {
+		//	snapshot := newSnapshot(entry.Term, entry.Index, cmdEncode(entry.Cmd))
+		//	installSnapshot(rf, snapshot)
+		//} else {
+		//	syncApply(rf.applyCh, entry.Cmd, entry.Index)
+		//}
+		syncApply(rf.applyCh, entry.Cmd, entry.Index)
 	}
 	rf.state.setLastApplied(rf.state.getCommitIndex())
 }
-
-// LogControllerLoop deprecated
-//func (rf *Raft) LogControllerLoop(i int, stopCh <-chan struct{}) {
-//	for {
-//		select {
-//		case <-stopCh:
-//			return
-//		default:
-//			arg := buildAppendArgs(rf, i, "log control loop")
-//			// TODO 等到能够确定matchIndex的更新机制后，尝试减少不必要的
-//			reply := &AppendEntriesReply{}
-//			rf.sendAppendEntries(i, arg, reply, nil, "logController loop")
-//			time.Sleep(100 * time.Millisecond)
-//		}
-//	}
-//}
 
 func (rf *Raft) setVote(vote *Vote) {
 	versionIncLog("set vote")

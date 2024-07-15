@@ -306,6 +306,8 @@ func buildAppendArgs(rf *Raft, server int, from string) logSyncEntry {
 		logs := rf.state.getLogRange(nextIndex, -1)
 		if len(logs) < cpLen {
 			logrus.WithFields(logrus.Fields{
+				"firstIndex": firstIndex,
+
 				"purLen":    rf.state.pureLogLen(),
 				"len":       rf.state.logLen(),
 				"nextIndex": nextIndex,

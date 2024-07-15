@@ -353,11 +353,12 @@ func (s *State) deleteLastIndex(entries []*LogEntry) {
 }
 
 func (s *State) installSnapshot(rf *Raft, snap *Snapshot) {
+	lastIndex := snap.LastIndex
 	// remove all logs before snapshot.LastIndex
-	rf.state.pState.Logs = rf.state.getLogRange(snap.LastIndex+1, -1)
+	rf.state.pState.Logs = rf.state.getLogRange(lastIndex+1, -1)
 	s.setSnapshot(snap)
 	rf.persist()
-	syncSnapshot(rf.applyCh, snap.byte(), snap.LastTerm, snap.LastIndex)
-	rf.state.setLastApplied(snap.LastIndex)
-	rf.state.setCommitIndex(snap.LastIndex)
+	syncSnapshot(rf.applyCh, snap.byte(), snap.LastTerm, lastIndex)
+	rf.state.setLastApplied(lastIndex)
+	rf.state.setCommitIndex(lastIndex)
 }
